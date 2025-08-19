@@ -34,7 +34,7 @@ const ProductList = ({ role = 'foh' }) => {
   useEffect(() => {
     let filtered = products.filter(product => {
       const matchesSearch = product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           (product.sku && product.sku.toLowerCase().includes(searchTerm.toLowerCase())) ||
+                           product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            (product.supplier && product.supplier.toLowerCase().includes(searchTerm.toLowerCase()));
       
       const matchesCategory = !selectedCategory || product.category === selectedCategory;
@@ -197,7 +197,7 @@ const ProductList = ({ role = 'foh' }) => {
             >
               <option value="">All Categories</option>
               {Object.entries(fohCategories)
-                .filter(([key, cat]) => !cat.isVariant)
+                .filter(([key, cat]) => !cat.isVariant) // Don't show variant categories in filter
                 .map(([key, cat]) => (
                   <option key={key} value={key}>
                     {cat.icon} {cat.name}
@@ -267,15 +267,13 @@ const ProductList = ({ role = 'foh' }) => {
         )}
       </div>
 
-      {/* Product Table - Constrained width */}
-      <div className="w-full overflow-hidden">
-        <ProductTable
-          products={filteredProducts}
-          onEdit={handleEditProduct}
-          onDelete={handleDeleteProduct}
-          onToggleActive={handleToggleActive}
-        />
-      </div>
+      {/* Product Table */}
+      <ProductTable
+        products={filteredProducts}
+        onEdit={handleEditProduct}
+        onDelete={handleDeleteProduct}
+        onToggleActive={handleToggleActive}
+      />
 
       {/* Product Family Form Modal */}
       <ProductFamilyForm

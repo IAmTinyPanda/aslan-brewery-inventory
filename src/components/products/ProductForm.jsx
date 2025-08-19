@@ -1,10 +1,8 @@
-// src/components/products/ProductForm.jsx
 import React, { useState, useEffect } from 'react';
-import { X, Save, Package, DollarSign, Calculator } from 'lucide-react';
-import { aslanTheme } from '../../utils/aslanBranding';
-import { fohCategories } from '../../data/categories';
+import { X, Save, Package, DollarSign, Calculator, Plus, Trash2, AlertCircle } from 'lucide-react';
+import { fohCategories, calculateMultipleServings } from '../../data/categories';
 
-const ProductForm = ({ 
+const EnhancedProductForm = ({ 
   product = null, 
   isOpen = false, 
   onClose, 
@@ -20,25 +18,23 @@ const ProductForm = ({
     unitSize: '',
     unitType: '',
     costPerUnit: '',
-    servingSize: '',
-    servingUnit: 'oz',
-    targetMargin: '75',
     description: '',
     notes: '',
-    isActive: true
+    isActive: true,
+    productType: 'final',
+    variantType: '', // For beer families
+    multipleServings: [], // [{servingOption, price, margin}, ...]
+    isFamily: false
   });
 
   const [calculatedData, setCalculatedData] = useState({
-    costPerServing: 0,
-    suggestedPrice: 0,
-    servingsPerUnit: 0
+    servingsPerUnit: {},
+    costPerServing: {}
   });
 
+  // Reset form when opening
   useEffect(() => {
-    if (product && isEditing) {
-      setFormData({ ...product });
-    } else if (!isEditing) {
-      // Reset form for new product
+    if (isOpen && !isEditing) {
       setFormData({
         name: '',
         category: '',
@@ -48,98 +44,59 @@ const ProductForm = ({
         unitSize: '',
         unitType: '',
         costPerUnit: '',
-        servingSize: '',
-        servingUnit: 'oz',
-        targetMargin: '75',
         description: '',
         notes: '',
-        isActive: true
+        isActive: true,
+        productType: 'final',
+        variantType: '',
+        multipleServings: [],
+        isFamily: false
       });
+    } else if (product && isEditing) {
+      setFormData({ ...product });
     }
-  }, [product, isEditing, isOpen]);
+  }, [isOpen, isEditing, product]);
 
-  // Calculate cost per serving and suggested price
+  // Calculate servings and costs for all serving options
   useEffect(() => {
-    const { costPerUnit, unitSize, servingSize, unitType, servingUnit, targetMargin } = formData;
+    const { costPerUnit, unitSize } = formData;
+    const selectedCategory = fohCategories[formData.category];
     
-    if (costPerUnit && unitSize && servingSize && unitType && servingUnit) {
+    if (costPerUnit && unitSize && selectedCategory) {
       const cost = parseFloat(costPerUnit);
-      const unit = parseFloat(unitSize);
-      const serving = parseFloat(servingSize);
-      const margin = parseFloat(targetMargin) / 100;
+      const newServingsPerUnit = {};
+      const newCostPerServing = {};
 
-      let servingsPerUnit = 0;
-      let costPerServing = 0;
-
-      // Convert unit size to oz for standardized calculation
-      let unitSizeInOz = 0;
-      
-      // Unit conversions to oz
-      switch (unitType) {
-        case 'oz':
-          unitSizeInOz = unit;
-          break;
-        case 'ml':
-          unitSizeInOz = unit / 29.5735; // ml to oz
-          break;
-        case 'gallons':
-          unitSizeInOz = unit * 128; // gallons to oz
-          break;
-        case 'liters':
-          unitSizeInOz = unit * 33.814; // liters to oz
-          break;
-        case 'bottles':
-          unitSizeInOz = unit * 25.36; // assume 750ml bottles
-          break;
-        case 'cases':
-          unitSizeInOz = unit * 288; // assume 12 x 24oz bottles per case
-          break;
-        default:
-          unitSizeInOz = unit; // fallback: assume same unit
+      // Handle beer families with multiple serving options
+      if (selectedCategory.variants && formData.variantType) {
+        const variant = selectedCategory.variants[formData.variantType];
+        if (variant?.servingOptions) {
+          variant.servingOptions.forEach(option => {
+            const servings = calculateMultipleServings(formData, option.value);
+            if (servings > 0) {
+              newServingsPerUnit[option.value] = servings;
+              newCostPerServing[option.value] = cost / servings;
+            }
+          });
+        }
       }
-
-      // Convert serving size to oz for standardized calculation
-      let servingSizeInOz = 0;
-      
-      switch (servingUnit) {
-        case 'oz':
-          servingSizeInOz = serving;
-          break;
-        case 'ml':
-          servingSizeInOz = serving / 29.5735; // ml to oz
-          break;
-        default:
-          servingSizeInOz = serving; // fallback
-      }
-
-      // Calculate servings per unit
-      if (unitSizeInOz > 0 && servingSizeInOz > 0) {
-        servingsPerUnit = unitSizeInOz / servingSizeInOz;
-        costPerServing = cost / servingsPerUnit;
-        const suggestedPrice = costPerServing / (1 - margin);
-        
-        setCalculatedData({
-          costPerServing: costPerServing,
-          suggestedPrice: suggestedPrice,
-          servingsPerUnit: servingsPerUnit
-        });
-      } else {
-        // Reset calculations if invalid
-        setCalculatedData({
-          costPerServing: 0,
-          suggestedPrice: 0,
-          servingsPerUnit: 0
+      // Handle simple categories with single serving option
+      else if (selectedCategory.servingOptions) {
+        selectedCategory.servingOptions.forEach(option => {
+          const servings = calculateMultipleServings(formData, option.value);
+          if (servings > 0) {
+            newServingsPerUnit[option.value] = servings;
+            newCostPerServing[option.value] = cost / servings;
+          }
         });
       }
-    } else {
-      // Reset calculations if missing data
+
       setCalculatedData({
-        costPerServing: 0,
-        suggestedPrice: 0,
-        servingsPerUnit: 0
+        servingsPerUnit: newServingsPerUnit,
+        costPerServing: newCostPerServing
       });
     }
-  }, [formData.costPerUnit, formData.unitSize, formData.servingSize, formData.unitType, formData.servingUnit, formData.targetMargin]);
+  }, [formData.costPerUnit, formData.unitSize, formData.unitType, formData.category, formData.variantType]);
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
@@ -151,47 +108,111 @@ const ProductForm = ({
 
   const handleCategoryChange = (e) => {
     const category = e.target.value;
+    const categoryData = fohCategories[category];
+    
+    let defaults = {};
+    
+    if (categoryData) {
+      defaults.productType = categoryData.productType || 'final';
+      defaults.isFamily = categoryData.isFamily || false;
+      
+      // Reset variant type when changing categories
+      defaults.variantType = '';
+      defaults.multipleServings = [];
+    }
+    
     setFormData(prev => ({
       ...prev,
       category,
-      subcategory: '', // Reset subcategory when category changes
-      sku: generateSKU(formData.name, category)
+      subcategory: '',
+      sku: generateSKU(prev.name, category, categoryData?.requiresToastSku),
+      ...defaults
     }));
   };
 
-  const generateSKU = (name, category) => {
-    if (!name || !category) return '';
+  const handleVariantTypeChange = (e) => {
+    const variantType = e.target.value;
+    setFormData(prev => ({
+      ...prev,
+      variantType,
+      unitType: '', // Reset unit type when changing variant
+      multipleServings: []
+    }));
+  };
+
+  const generateSKU = (name, category, requiresToast = false) => {
+    if (requiresToast) return ''; // Manual entry required
     
     const categoryCode = {
-      'beer': 'BER',
-      'wine': 'WIN',
       'spirits': 'SPR',
       'mixers': 'MIX',
-      'batchCocktails': 'BCK',
-      'nonAlcoholic': 'NAL'
+      'wine': 'WIN',
+      'cider': 'CDR',
+      'retail': 'RTL',
+      'beerFamily': 'BER'
     };
 
     const nameCode = name.substring(0, 3).toUpperCase().replace(/\s/g, '');
     const catCode = categoryCode[category] || 'GEN';
     const randomNum = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
     
-    return `${catCode}-${nameCode}-${randomNum}`;
+    return `ASL-${catCode}-${nameCode}-${randomNum}`;
   };
 
   const handleNameChange = (e) => {
     const name = e.target.value;
+    const categoryData = fohCategories[formData.category];
+    
     setFormData(prev => ({
       ...prev,
       name,
-      sku: generateSKU(name, prev.category)
+      sku: generateSKU(name, prev.category, categoryData?.requiresToastSku)
     }));
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
+  const addServingOption = (servingOption) => {
+    const costPerServing = calculatedData.costPerServing[servingOption.value] || 0;
+    const suggestedPrice = costPerServing / 0.25; // 75% margin
+
+    setFormData(prev => ({
+      ...prev,
+      multipleServings: [
+        ...prev.multipleServings,
+        {
+          servingOption: servingOption.value,
+          label: servingOption.label,
+          price: suggestedPrice.toFixed(2),
+          margin: 75
+        }
+      ]
+    }));
+  };
+
+  const updateServingPrice = (index, price) => {
+    const costPerServing = Object.values(calculatedData.costPerServing)[0] || 0;
+    const margin = price > 0 ? ((price - costPerServing) / price) * 100 : 0;
+
+    setFormData(prev => ({
+      ...prev,
+      multipleServings: prev.multipleServings.map((serving, i) => 
+        i === index 
+          ? { ...serving, price, margin: margin.toFixed(1) }
+          : serving
+      )
+    }));
+  };
+
+  const removeServingOption = (index) => {
+    setFormData(prev => ({
+      ...prev,
+      multipleServings: prev.multipleServings.filter((_, i) => i !== index)
+    }));
+  };
+
+  const handleSubmit = () => {
     const productData = {
       ...formData,
-      ...calculatedData,
+      calculatedData,
       id: isEditing ? product.id : Date.now().toString(),
       createdAt: isEditing ? product.createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -201,9 +222,22 @@ const ProductForm = ({
 
   if (!isOpen) return null;
 
+  const selectedCategory = fohCategories[formData.category];
+  const selectedVariant = selectedCategory?.variants?.[formData.variantType];
+  const requiresManualSku = selectedCategory?.requiresToastSku;
+  const isIngredient = formData.productType === 'ingredient';
+  const isBeerFamily = formData.category === 'beerFamily';
+
+  // Get available serving options
+  const availableServingOptions = selectedVariant?.servingOptions || selectedCategory?.servingOptions || [];
+  const usedServingOptions = formData.multipleServings.map(ms => ms.servingOption);
+  const remainingServingOptions = availableServingOptions.filter(
+    option => !usedServingOptions.includes(option.value)
+  );
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-screen overflow-y-auto">
+      <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-screen overflow-y-auto">
         {/* Header */}
         <div className="bg-gradient-to-r from-green-800 to-green-900 px-6 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -220,7 +254,32 @@ const ProductForm = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+        <div className="p-6 space-y-6">
+          {/* Product Type Indicator */}
+          {formData.category && (
+            <div className={`p-3 rounded-lg border-l-4 ${
+              isIngredient 
+                ? 'bg-blue-50 border-blue-500' 
+                : isBeerFamily 
+                  ? 'bg-purple-50 border-purple-500'
+                  : 'bg-green-50 border-green-500'
+            }`}>
+              <div className="flex items-center space-x-2">
+                <span className="text-sm font-medium">
+                  {isIngredient ? '🧪 Ingredient' : isBeerFamily ? '🍺 Beer Family' : '🛒 Final Product'}
+                </span>
+                <span className="text-sm text-gray-600">
+                  {isIngredient 
+                    ? 'Used in recipes, not sold directly' 
+                    : isBeerFamily
+                      ? 'Multiple purchase formats and serving options'
+                      : 'Sold directly to customers'
+                  }
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Basic Information */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
@@ -232,23 +291,8 @@ const ProductForm = ({
                 name="name"
                 value={formData.name}
                 onChange={handleNameChange}
-                required
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800 focus:border-transparent"
-                placeholder="e.g., B'ham Brown Ale"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Generated SKU
-              </label>
-              <input
-                type="text"
-                name="sku"
-                value={formData.sku}
-                onChange={handleInputChange}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
-                placeholder="Auto-generated"
+                placeholder={isBeerFamily ? "e.g., Batch 15, House IPA" : "e.g., Tequila Blanco, Pinot Grigio"}
               />
             </div>
 
@@ -260,7 +304,6 @@ const ProductForm = ({
                 name="category"
                 value={formData.category}
                 onChange={handleCategoryChange}
-                required
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
               >
                 <option value="">Select Category</option>
@@ -272,21 +315,68 @@ const ProductForm = ({
               </select>
             </div>
 
+            {/* Beer Family Variant Selection */}
+            {isBeerFamily && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Purchase Format *
+                </label>
+                <select
+                  name="variantType"
+                  value={formData.variantType}
+                  onChange={handleVariantTypeChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
+                >
+                  <option value="">Select Format</option>
+                  {selectedCategory?.variants && Object.entries(selectedCategory.variants).map(([key, variant]) => (
+                    <option key={key} value={key}>
+                      {variant.icon} {variant.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {formData.category && selectedCategory?.subcategories && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Subcategory
+                </label>
+                <select
+                  name="subcategory"
+                  value={formData.subcategory}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
+                >
+                  <option value="">Select Subcategory</option>
+                  {selectedCategory.subcategories.map(sub => (
+                    <option key={sub} value={sub}>{sub}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Subcategory
+                SKU {requiresManualSku && <span className="text-red-600">*</span>}
               </label>
-              <select
-                name="subcategory"
-                value={formData.subcategory}
+              {requiresManualSku && (
+                <div className="mb-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
+                  <AlertCircle className="h-4 w-4 inline mr-1" />
+                  Enter your existing TOAST SKU for this beer
+                </div>
+              )}
+              <input
+                type="text"
+                name="sku"
+                value={formData.sku}
                 onChange={handleInputChange}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
-              >
-                <option value="">Select Subcategory</option>
-                {formData.category && fohCategories[formData.category]?.subcategories.map(sub => (
-                  <option key={sub} value={sub}>{sub}</option>
-                ))}
-              </select>
+                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800 ${
+                  !requiresManualSku ? 'bg-gray-50' : ''
+                }`}
+                placeholder={requiresManualSku ? "Enter TOAST SKU" : "Auto-generated"}
+                readOnly={!requiresManualSku}
+              />
             </div>
 
             <div>
@@ -299,53 +389,50 @@ const ProductForm = ({
                 value={formData.supplier}
                 onChange={handleInputChange}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
-                placeholder="e.g., Dickerson Distributors"
+                placeholder="e.g., Dickerson Distributors, Total Wine"
               />
             </div>
           </div>
 
-          {/* Cost & Unit Information */}
+          {/* Purchase Information */}
           <div className="bg-gray-50 p-4 rounded-lg">
             <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
               <DollarSign className="h-5 w-5 mr-2" />
-              Cost & Unit Information
+              Purchase Information
             </h3>
             
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Unit Size *
+                  Purchase Quantity *
                 </label>
                 <input
                   type="number"
-                  step="0.01"
+                  step="0.1"
                   name="unitSize"
                   value={formData.unitSize}
                   onChange={handleInputChange}
-                  required
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
-                  placeholder="750"
+                  placeholder="1"
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Unit Type *
+                  Purchase Unit *
                 </label>
                 <select
                   name="unitType"
                   value={formData.unitType}
                   onChange={handleInputChange}
-                  required
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
                 >
-                  <option value="">Select Unit</option>
-                  <option value="ml">ml</option>
-                  <option value="oz">oz</option>
-                  <option value="gallons">gallons</option>
-                  <option value="liters">liters</option>
-                  <option value="bottles">bottles</option>
-                  <option value="cases">cases</option>
+                  <option value="">Select Purchase Unit</option>
+                  {(selectedVariant?.purchaseUnits || selectedCategory?.purchaseUnits)?.map(unit => (
+                    <option key={unit.value} value={unit.value}>
+                      {unit.label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -359,90 +446,94 @@ const ProductForm = ({
                   name="costPerUnit"
                   value={formData.costPerUnit}
                   onChange={handleInputChange}
-                  required
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
                   placeholder="15.99"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Serving Size *
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  name="servingSize"
-                  value={formData.servingSize}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
-                  placeholder="5"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Serving Unit *
-                </label>
-                <select
-                  name="servingUnit"
-                  value={formData.servingUnit}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
-                >
-                  <option value="oz">oz</option>
-                  <option value="ml">ml</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Target Margin %
-                </label>
-                <input
-                  type="number"
-                  step="1"
-                  name="targetMargin"
-                  value={formData.targetMargin}
-                  onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
-                  placeholder="75"
                 />
               </div>
             </div>
           </div>
 
-          {/* Calculated Values */}
-          {calculatedData.servingsPerUnit > 0 && (
+          {/* Multiple Serving Options - For Final Products */}
+          {!isIngredient && Object.keys(calculatedData.servingsPerUnit).length > 0 && (
             <div className="bg-yellow-50 p-4 rounded-lg">
-              <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
-                <Calculator className="h-5 w-5 mr-2" />
-                Calculated Values
-              </h3>
-              
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-green-800">
-                    {calculatedData.servingsPerUnit.toFixed(1)}
-                  </div>
-                  <div className="text-sm text-gray-600">Servings per Unit</div>
-                </div>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                  <Calculator className="h-5 w-5 mr-2" />
+                  Serving Options & Pricing
+                </h3>
                 
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-green-800">
-                    ${calculatedData.costPerServing.toFixed(3)}
+                {remainingServingOptions.length > 0 && (
+                  <div className="flex items-center space-x-2">
+                    <select
+                      onChange={(e) => {
+                        const option = remainingServingOptions.find(opt => opt.value === e.target.value);
+                        if (option) addServingOption(option);
+                      }}
+                      className="px-3 py-1 border border-gray-300 rounded text-sm"
+                      defaultValue=""
+                    >
+                      <option value="">Add Serving Option</option>
+                      {remainingServingOptions.map(option => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <div className="text-sm text-gray-600">Cost per Serving</div>
+                )}
+              </div>
+
+              {formData.multipleServings.length === 0 && (
+                <div className="text-center py-6 text-gray-500">
+                  <Calculator className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+                  <p>No serving options configured</p>
+                  <p className="text-sm">Add serving options to set pricing</p>
                 </div>
-                
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-green-800">
-                    ${calculatedData.suggestedPrice.toFixed(2)}
-                  </div>
-                  <div className="text-sm text-gray-600">Suggested Price</div>
-                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {formData.multipleServings.map((serving, index) => {
+                  const servings = calculatedData.servingsPerUnit[serving.servingOption] || 0;
+                  const costPerServing = calculatedData.costPerServing[serving.servingOption] || 0;
+                  
+                  return (
+                    <div key={index} className="bg-white p-4 rounded border">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="font-medium text-gray-800">{serving.label}</div>
+                        <button
+                          onClick={() => removeServingOption(index)}
+                          className="text-red-600 hover:text-red-800"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                      
+                      <div className="text-sm text-gray-600 mb-3">
+                        <div>Servings: {servings.toFixed(1)}</div>
+                        <div>Cost: ${costPerServing.toFixed(3)}</div>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-gray-700">
+                          Selling Price
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={serving.price}
+                          onChange={(e) => updateServingPrice(index, parseFloat(e.target.value))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-green-800"
+                        />
+                        <div className={`text-xs ${
+                          serving.margin >= 70 ? 'text-green-600' :
+                          serving.margin >= 50 ? 'text-yellow-600' : 'text-red-600'
+                        }`}>
+                          Margin: {serving.margin}%
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -494,24 +585,23 @@ const ProductForm = ({
           {/* Actions */}
           <div className="flex justify-end space-x-4 pt-6 border-t">
             <button
-              type="button"
               onClick={onClose}
               className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
             >
               Cancel
             </button>
             <button
-              type="submit"
+              onClick={handleSubmit}
               className="px-4 py-2 bg-green-800 text-white rounded-lg hover:bg-green-900 transition-colors font-medium flex items-center space-x-2"
             >
               <Save className="h-4 w-4" />
               <span>{isEditing ? 'Update Product' : 'Add Product'}</span>
             </button>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   );
 };
 
-export default ProductForm;
+export default EnhancedProductForm;
