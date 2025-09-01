@@ -1,332 +1,382 @@
-// src/components/products/ProductTable.jsx — v4.2
-// Adds: internal scrolling, Show Ingredients toggle, family-level archive/restore,
-// keeps tree (Family ▶ Variant ▶ Serving) and allows collapse even in Detailed.
+// src/components/products/ProductTable.jsx - Clean implementation
+import React, { useState } from 'react';
+import { Edit2, Trash2, Eye, EyeOff, ChevronUp, ChevronDown, Package, Beaker } from 'lucide-react';
+import { fohCategories } from '../../data/categories';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { Edit2, Trash2, Eye, EyeOff, ChevronUp, ChevronDown, ChevronRight, Settings, Download, CheckSquare, Square, ArchiveRestore, Filter } from 'lucide-react';
+const ProductTable = ({ products, onEdit, onDelete, onToggleActive, showRecipeBadges = false }) => {
+  const [sortField, setSortField] = useState('name');
+  const [sortDirection, setSortDirection] = useState('asc');
+  const [viewMode, setViewMode] = useState('compact'); // 'compact' or 'full'
 
-// ---- helpers ----
-const fmt = (n, d = 2) => { const x = parseFloat(n); return isFinite(x) ? x.toFixed(d) : '—'; };
-const $ = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return '—'; } };
-
-const PREFS_KEY = 'aslan_product_table_prefs_v4';
-const defaultPrefs = {
-  view: 'compact', // 'compact' | 'full'
-  pageSize: 25,
-  showIngredients: false, // NEW: hide ingredient/non-sellable by default
-  visibleCols: {
-    name: true,
-    sku: true,
-    category: true,
-    vendor: true,
-    purchaseUnit: true,
-    servingUnit: true,
-    servingsPerPurchase: true,
-    costPerPurchase: true,
-    costPerServing: true,
-    suggestedPrice: true,
-    updatedAt: false,
-    isActive: true,
-  },
-  sort: [{ id: 'name', dir: 'asc' }],
-};
-function loadPrefs() { try { const p = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null'); return p ? { ...defaultPrefs, ...p, visibleCols: { ...defaultPrefs.visibleCols, ...(p.visibleCols||{}) } } : defaultPrefs; } catch { return defaultPrefs; } }
-function savePrefs(p) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch {} }
-
-function createColumns(prefs){
-  return [
-    { id:'name', label:'Name', visible:true, sortable:true, render:(p)=>p.__servingLabel || p.name || '—', val:(p)=>(p.name||'').toLowerCase() },
-    { id:'sku', label:'SKU', visible:prefs.visibleCols.sku, sortable:true, render:(p)=>p.sku||'—', val:(p)=>(p.sku||'').toLowerCase() },
-    { id:'category', label:'Category', visible:prefs.visibleCols.category, sortable:true, render:(p)=> p.category ? (p.subcategory? `${p.category} • ${p.subcategory}`: p.category) : '—', val:(p)=>`${(p.category||'').toLowerCase()}|${(p.subcategory||'').toLowerCase()}` },
-    { id:'vendor', label:'Vendor', visible:prefs.visibleCols.vendor, sortable:true, render:(p)=>p.vendor||'—', val:(p)=>(p.vendor||'').toLowerCase() },
-    { id:'purchaseUnit', label:'Purchase Unit', visible:prefs.visibleCols.purchaseUnit, sortable:false, render:(p)=>{ const u=p.purchaseUnit||{}; return `${u.packQty||1} x ${u.size??'—'} ${u.baseUnit||''} (${u.name||'unit'})`; } },
-    { id:'servingUnit', label:'Serving Unit', visible:prefs.visibleCols.servingUnit, sortable:false, render:(p)=>{ const s=p.servingUnit||{}; return `${s.size??'—'} ${s.baseUnit||''} (${s.name||'serving'})`; } },
-    { id:'servingsPerPurchase', label:'Servings/Purchase', visible:prefs.visibleCols.servingsPerPurchase, sortable:true, render:(p)=>p.servingsPerPurchase ?? '—', val:(p)=>+(p.servingsPerPurchase||0) },
-    { id:'costPerPurchase', label:'Cost/Purchase', visible:prefs.visibleCols.costPerPurchase, sortable:true, render:(p)=>`$${fmt(p.costPerPurchase)}`, val:(p)=>+(p.costPerPurchase||0) },
-    { id:'costPerServing', label:'Cost/Serving', visible:prefs.visibleCols.costPerServing, sortable:true, render:(p)=>`$${fmt(p.costPerServing,4)}`, val:(p)=>+(p.costPerServing||0) },
-    { id:'suggestedPrice', label:'Suggested Price', visible:prefs.visibleCols.suggestedPrice, sortable:true, render:(p)=> p.suggestedPrice!=null?`$${fmt(p.suggestedPrice)}`:'—', val:(p)=>+(p.suggestedPrice||0) },
-    { id:'updatedAt', label:'Updated', visible:prefs.visibleCols.updatedAt, sortable:true, render:(p)=>$(p.updatedAt), val:(p)=> new Date(p.updatedAt||0).getTime() },
-    { id:'isActive', label:'Active', visible:prefs.visibleCols.isActive, sortable:true, render:(p)=> (<span className={`inline-flex items-center px-2 py-0.5 rounded text-xs ${p.isActive? 'bg-green-50 text-green-700 border border-green-200':'bg-gray-50 text-gray-600 border border-gray-200'}`}>{p.isActive? 'Yes':'No'}</span>), val:(p)=> (p.isActive?1:0) },
-  ];
-}
-
-// ---- hierarchy helpers ----
-function keyForFamily(p){ if (p.familyId) return `id:${p.familyId}`; if (p.familyName) return `name:${p.familyName}`; return null; }
-function familyTitleFrom(p){ if (p.familyName) return p.familyName; if (p.family?.name) return p.family.name; if (typeof p.name==='string' && p.name.includes(' - ')) return p.name.split(' - ')[0].trim(); return '(Family)'; }
-function servingLabelFrom(p){ return (p.servingUnit && p.servingUnit.name) || p.displayLabel || 'Serving'; }
-function isIngredientProduct(p){
-  // Hide when not sellable or flagged ingredient; be permissive with field names
-  if (p.isSellable === false) return true;
-  if (p.isIngredient === true) return true;
-  const cat = (p.category||'').toLowerCase();
-  if (cat === 'ingredient' || cat === 'ingredients') return true;
-  return false;
-}
-
-function buildHierarchy(products, showIngredients){
-  const famMap = new Map();
-  const singles = [];
-  for (const p of products){
-    if (!showIngredients && isIngredientProduct(p)) continue;
-    const famKey = keyForFamily(p);
-    if (!famKey){ singles.push(p); continue; }
-    const fam = famMap.get(famKey) || { key:famKey, id:p.familyId||famKey, name:familyTitleFrom(p), category:p.category||'', vendor:p.vendor||'', variants:new Map() };
-    const vLabel = p.subcategory || p.purchaseUnit?.name || 'Variant';
-    const v = fam.variants.get(vLabel) || { label:vLabel, items:[] };
-    v.items.push({ ...p, __servingLabel: servingLabelFrom(p) });
-    fam.variants.set(vLabel, v);
-    famMap.set(famKey, fam);
-  }
-  const families = Array.from(famMap.values()).sort((a,b)=>a.name.localeCompare(b.name));
-  for (const f of families){
-    f.variantList = Array.from(f.variants.values()).sort((a,b)=>a.label.localeCompare(b.label));
-    for (const v of f.variantList){ v.items.sort((a,b)=>{ const sa=a.servingUnit?.size??0, sb=b.servingUnit?.size??0; return sa!==sb? sa-sb : (a.__servingLabel||'').localeCompare(b.__servingLabel||''); }); }
-  }
-  return { families, singles };
-}
-
-export default function ProductTable({ products=[], onEdit, onDelete, onToggleActive }){
-  const [prefs,setPrefs] = useState(loadPrefs);
-  const [page,setPage] = useState(1);
-  const [pageSize,setPageSize] = useState(prefs.pageSize||25);
-  const [colMenu,setColMenu] = useState(false);
-  const [selected,setSelected] = useState(()=> new Set());
-  const [openFamilies,setOpenFamilies] = useState(()=> new Set());
-  const [openVariants,setOpenVariants] = useState(()=> new Set()); // key: famKey::label
-
-  useEffect(()=>{ savePrefs({ ...prefs, pageSize }); },[prefs,pageSize]);
-
-  const columns = useMemo(()=> createColumns(prefs),[prefs]);
-  const { families, singles } = useMemo(()=> buildHierarchy(products, prefs.showIngredients),[products, prefs.showIngredients]);
-
-  // Rows for current page
-  const rows = useMemo(()=>{
-    const list=[];
-    const pushFamily=(f)=>{
-      list.push({ type:'family', id:f.key, data:f });
-      const famOpen = openFamilies.has(f.key); // allow closing even in Detailed
-      if(!famOpen && prefs.view !== 'full') return; // in compact, closed stays closed; in full, we will auto-open via effect below
-      for (const v of f.variantList){
-        const vKey = `${f.key}::${v.label}`;
-        list.push({ type:'variant', id:vKey, familyKey:f.key, data:v });
-        const varOpen = openVariants.has(vKey);
-        if(!varOpen && prefs.view !== 'full') continue;
-        for (const p of v.items) list.push({ type:'product', id:p.id, data:p });
-      }
-    };
-    for (const f of families) pushFamily(f);
-    for (const p of singles) list.push({ type:'product', id:p.id, data:p });
-    return list;
-  },[families,singles,openFamilies,openVariants,prefs.view]);
-
-  // Auto-open when entering Detailed, but let user collapse afterward
-  useEffect(() => {
-    if (prefs.view !== 'full') return;
-    const famKeys = new Set(families.map(f => f.key));
-    setOpenFamilies(famKeys);
-    const varKeys = new Set();
-    families.forEach(f => (f.variantList||[]).forEach(v => varKeys.add(`${f.key}::${v.label}`)));
-    setOpenVariants(varKeys);
-  }, [prefs.view, families]);
-
-  const total = rows.length; const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const safePage = Math.min(page,totalPages);
-  const start = (safePage-1)*pageSize, end = Math.min(start+pageSize,total);
-  const pageRows = rows.slice(start,end);
-  const activeCount = useMemo(()=> products.filter(p=>p.isActive).length, [products]);
-
-  const toggleSort = (id, multi=false)=>{ setPrefs(prev=>{ const cur=[...(prev.sort||[])]; const i=cur.findIndex(s=>s.id===id); const next = { ...prev }; if(i===-1) next.sort = multi? [...cur,{id,dir:'asc'}] : [{id,dir:'asc'}]; else { const dir = cur[i].dir==='asc'?'desc':'asc'; next.sort = multi? cur.map((s,idx)=> idx===i?{...s,dir}:s) : [{id,dir}]; } return next; }); };
-  const setVisible = (id,val)=> setPrefs(prev=>({ ...prev, visibleCols:{ ...prev.visibleCols, [id]:!!val } }));
-
-  const isPageAllSelected = pageRows.filter(r=>r.type==='product').every(r=> selected.has(r.id));
-  const toggleSelectAllOnPage = ()=> setSelected(prev=>{ const next=new Set(prev); const prows=pageRows.filter(r=>r.type==='product'); const all = prows.length>0 && prows.every(r=> next.has(r.id)); if(all) prows.forEach(r=>next.delete(r.id)); else prows.forEach(r=>next.add(r.id)); return next; });
-  const toggleSelectRow = (id)=> setSelected(prev=>{ const next=new Set(prev); next.has(id)? next.delete(id): next.add(id); return next; });
-  const clearSel = ()=> setSelected(new Set());
-
-  const bulkArchive = async()=>{ for (const id of selected) await onToggleActive?.(id,false); clearSel(); };
-  const bulkRestore = async()=>{ for (const id of selected) await onToggleActive?.(id,true); clearSel(); };
-  const bulkDelete = async()=>{ if(!confirm(`Delete ${selected.size} product(s)?`)) return; for (const id of selected) await onDelete?.(id); clearSel(); };
-
-  const exportCSV = ()=>{
-    const vis = columns.filter(c=>c.visible);
-    const just = pageRows.filter(r=>r.type==='product').map(r=>r.data);
-    const head = vis.map(c=>`"${c.label.replace(/"/g,'""')}"`).join(',');
-    const body = just.map(row => vis.map(c=>{ const v = c.val? c.val(row): (c.render? c.render(row): row[c.id]); return `"${(v??'').toString().replace(/"/g,'""')}"`; }).join(',')).join('\n');
-    const csv = head+'\n'+body; const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='aslan_products.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  };
-
-  // Family-level archive/restore
-  const archiveFamily = async (famKey, active=false) => {
-    const fam = families.find(f => f.key === famKey);
-    if (!fam) return;
-    for (const v of (fam.variantList||[])){
-      for (const p of (v.items||[])){
-        await onToggleActive?.(p.id, active);
-      }
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
     }
   };
 
-  const Head = ({ col }) => {
-    const active = (prefs.sort||[]).find(s=>s.id===col.id);
-    return (
-      <th className={`text-left font-semibold px-4 py-2 whitespace-nowrap sticky top-0 bg-gray-50 z-10 ${col.sortable?'cursor-pointer select-none':''}`} onClick={(e)=> col.sortable && toggleSort(col.id, e.shiftKey)}>
-        <div className="inline-flex items-center gap-1">
-          <span>{col.label}</span>
-          {active ? (active.dir==='asc'? <ChevronUp className="h-4 w-4"/> : <ChevronDown className="h-4 w-4"/>) : null}
-        </div>
-      </th>
-    );
-  };
+  const sortedProducts = [...products].sort((a, b) => {
+    let aValue = a[sortField] || '';
+    let bValue = b[sortField] || '';
 
-  const FamRow = ({ f }) => {
-    const open = openFamilies.has(f.key);
-    const famActive = (f.variantList||[]).some(v => (v.items||[]).some(p => p.isActive));
-    return (
-      <tr className="border-t bg-gray-50/60 hover:bg-gray-50">
-        <td className="px-3 py-2">
-          <button onClick={()=> setOpenFamilies(prev=>{ const s=new Set(prev); s.has(f.key)? s.delete(f.key): s.add(f.key); return s; })} className="p-1 rounded border bg-white" title={open?'Collapse':'Expand'}>
-            {open? <ChevronDown className="h-4 w-4"/> : <ChevronRight className="h-4 w-4"/>}
-          </button>
-        </td>
-        <td className="px-4 py-2 font-semibold" colSpan={columns.filter(c=>c.visible).length - 2}>
-          <span className="mr-3">{f.name}</span>
-          <span className="text-xs text-gray-500">{f.category}{f.vendor? ` • ${f.vendor}`: ''}</span>
-        </td>
-        <td className="px-4 py-2" colSpan={3}>
-          <div className="flex items-center gap-2 justify-end">
-            <button onClick={()=> archiveFamily(f.key, false)} className="p-1 rounded hover:bg-gray-100" title="Archive family"><EyeOff className="h-4 w-4"/></button>
-            <button onClick={()=> archiveFamily(f.key, true)} className="p-1 rounded hover:bg-gray-100" title="Restore family"><Eye className="h-4 w-4"/></button>
-          </div>
-        </td>
-      </tr>
-    );
-  };
+    // Handle numeric fields
+    if (['costPerUnit', 'costPerServing', 'suggestedPrice', 'servingsPerUnit', 'targetMargin'].includes(sortField)) {
+      aValue = parseFloat(aValue) || 0;
+      bValue = parseFloat(bValue) || 0;
+    }
 
-  const VarRow = ({ fKey, v }) => {
-    const key = `${fKey}::${v.label}`;
-    const open = openVariants.has(key);
-    return (
-      <tr className="border-t bg-white hover:bg-gray-50/50">
-        <td className="px-3 py-2"/>
-        <td className="px-4 py-2" colSpan={columns.filter(c=>c.visible).length + 1}>
-          <div className="flex items-center gap-2">
-            <button onClick={()=> setOpenVariants(prev=>{ const s=new Set(prev); s.has(key)? s.delete(key): s.add(key); return s; })} className="p-1 rounded border bg-white" title={open?'Collapse':'Expand'}>
-              {open? <ChevronDown className="h-4 w-4"/> : <ChevronRight className="h-4 w-4"/>}
-            </button>
-            <span className="font-medium">{v.label}</span>
-          </div>
-        </td>
-      </tr>
-    );
-  };
+    // Handle string fields
+    if (typeof aValue === 'string') {
+      aValue = aValue.toLowerCase();
+      bValue = bValue.toLowerCase();
+    }
 
-  const ProdRow = ({ p }) => (
-    <tr className="border-t hover:bg-gray-50/50">
-      <td className="px-3 py-2">
-        <label className="inline-flex items-center"><input type="checkbox" className="mr-2" checked={selected.has(p.id)} onChange={()=> toggleSelectRow(p.id)} /></label>
-      </td>
-      {columns.filter(c=>c.visible).map(col => (
-        <td key={col.id} className="px-4 py-2 whitespace-nowrap">{col.render(p)}</td>
-      ))}
-      <td className="px-4 py-2">
-        <div className="flex items-center gap-2">
-          <button onClick={()=> onEdit?.(p)} className="p-1 rounded hover:bg-gray-100" title="Edit"><Edit2 className="h-4 w-4"/></button>
-          <button onClick={()=> onToggleActive?.(p.id, !p.isActive)} className="p-1 rounded hover:bg-gray-100" title={p.isActive ? 'Archive':'Restore'}>
-            {p.isActive? <EyeOff className="h-4 w-4"/> : <Eye className="h-4 w-4"/>}
-          </button>
-          <button onClick={()=> onDelete?.(p.id)} className="p-1 rounded hover:bg-red-50 text-red-600" title="Delete"><Trash2 className="h-4 w-4"/></button>
-        </div>
-      </td>
-    </tr>
+    if (sortDirection === 'asc') {
+      return aValue > bValue ? 1 : -1;
+    } else {
+      return aValue < bValue ? 1 : -1;
+    }
+  });
+
+  const SortHeader = ({ field, children }) => (
+    <th
+      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+      onClick={() => handleSort(field)}
+    >
+      <div className="flex items-center space-x-1">
+        <span>{children}</span>
+        {sortField === field && (
+          sortDirection === 'asc' ? 
+            <ChevronUp className="h-4 w-4" /> : 
+            <ChevronDown className="h-4 w-4" />
+        )}
+      </div>
+    </th>
   );
 
-  return (
-    <div className="bg-white border rounded-xl overflow-hidden">
-      {/* toolbar */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 px-4 py-3 border-b">
-        <div className="text-sm text-gray-600">Active products: {activeCount} • Rows {start+1}-{end} of {total}</div>
-        <div className="flex items-center gap-2">
-          {/* Show Ingredients toggle */}
-          <label className="inline-flex items-center gap-2 px-2 py-1 rounded border bg-white">
-            <input type="checkbox" checked={prefs.showIngredients} onChange={(e)=> setPrefs(p=>({ ...p, showIngredients: e.target.checked }))} />
-            <span className="text-sm">Show ingredients</span>
-          </label>
+  const getCategoryIcon = (categoryKey) => {
+    return fohCategories[categoryKey]?.icon || '📦';
+  };
 
-          {selected.size>0 && (
-            <div className="flex items-center gap-2">
-              <button onClick={bulkArchive} className="px-2 py-1 text-sm rounded border">Archive</button>
-              <button onClick={bulkRestore} className="px-2 py-1 text-sm rounded border">Restore</button>
-              <button onClick={bulkDelete} className="px-2 py-1 text-sm rounded border text-red-600">Delete</button>
-              <span className="text-xs text-gray-500">{selected.size} selected</span>
-            </div>
-          )}
-          <button onClick={exportCSV} className="inline-flex items-center gap-1 px-2 py-1 rounded border" title="Export CSV"><Download className="h-4 w-4"/> Export</button>
-          <div className="relative">
-            <button onClick={()=> setColMenu(v=>!v)} className="inline-flex items-center gap-1 px-2 py-1 rounded border" title="Columns"><Settings className="h-4 w-4"/> View & Columns</button>
-            {colMenu && (
-              <div className="absolute right-0 mt-2 w-64 bg-white border rounded-lg shadow-lg p-2 z-20">
-                <div className="text-xs font-semibold text-gray-600 px-2 py-1">Visible Columns (product rows)</div>
-                {Object.keys(prefs.visibleCols).map(key => key==='name'? null : (
-                  <label key={key} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 rounded">
-                    <input type="checkbox" checked={!!prefs.visibleCols[key]} onChange={(e)=> setVisible(key, e.target.checked)} />
-                    <span className="text-sm capitalize">{key.replace(/([A-Z])/g,' $1')}</span>
-                  </label>
-                ))}
-                <div className="border-t my-2"/>
-                <div className="flex items-center justify-between px-2 py-1">
-                  <span className="text-sm">View</span>
-                  <div className="space-x-1">
-                    <button onClick={()=> setPrefs(p=>({ ...p, view:'compact' }))} className={`px-2 py-0.5 text-sm rounded border ${prefs.view==='compact'?'bg-gray-100':''}`}>Compact</button>
-                    <button onClick={()=> setPrefs(p=>({ ...p, view:'full' }))} className={`px-2 py-0.5 text-sm rounded border ${prefs.view==='full'?'bg-gray-100':''}`}>Detailed</button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">Rows:</span>
-            <select value={pageSize} onChange={(e)=>{ setPageSize(+e.target.value); setPage(1); }} className="border rounded px-2 py-1 bg-white text-sm">
-              {[10,25,50,100].map(n=> <option key={n} value={n}>{n}</option>)}
-            </select>
-          </div>
+  const getCategoryName = (categoryKey) => {
+    return fohCategories[categoryKey]?.name || categoryKey;
+  };
+
+  const formatCurrency = (value) => {
+    const num = parseFloat(value) || 0;
+    return `$${num.toFixed(2)}`;
+  };
+
+  const formatNumber = (value, decimals = 1) => {
+    const num = parseFloat(value) || 0;
+    return num.toFixed(decimals);
+  };
+
+  const getProductTypeBadge = (product) => {
+    if (product.isRecipeBased || product.category === 'batchCocktails') {
+      return (
+        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+          <Beaker className="h-3 w-3 mr-1" />
+          Recipe
+        </span>
+      );
+    } else if (product.productType === 'ingredient') {
+      return (
+        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+          🧪 Ingredient
+        </span>
+      );
+    } else if (product.multipleServings && product.multipleServings.length > 1) {
+      return (
+        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+          🍺 Multi-Serve
+        </span>
+      );
+    }
+    return null;
+  };
+
+  if (products.length === 0) {
+    return (
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        <div className="p-6 text-center">
+          <Package className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+          <p className="text-gray-500">No products to display</p>
         </div>
       </div>
+    );
+  }
 
-      {/* table — internal scroll */}
-      <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
-        <table className="min-w-full text-sm">
+  return (
+    <div className="bg-white rounded-lg shadow overflow-hidden">
+      {/* View Toggle */}
+      <div className="px-6 py-3 border-b border-gray-200 bg-gray-50">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-gray-700">
+            {products.length} product{products.length !== 1 ? 's' : ''}
+          </span>
+          <div className="flex items-center space-x-2">
+            <span className="text-xs text-gray-500">View:</span>
+            <button
+              onClick={() => setViewMode('compact')}
+              className={`px-3 py-1 text-xs rounded transition-colors ${
+                viewMode === 'compact' 
+                  ? 'bg-green-800 text-white' 
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              Compact
+            </button>
+            <button
+              onClick={() => setViewMode('full')}
+              className={`px-3 py-1 text-xs rounded transition-colors ${
+                viewMode === 'full' 
+                  ? 'bg-green-800 text-white' 
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              Full Details
+            </button>
+          </div>
+        </div>
+        {/* Scroll hint for full mode */}
+        {viewMode === 'full' && (
+          <div className="mt-2 text-xs text-gray-500 text-center">
+            ← Scroll table horizontally to see all columns →
+          </div>
+        )}
+      </div>
+
+      {/* Table Container */}
+      <div className="relative overflow-x-auto">
+        <table className={`divide-y divide-gray-200 ${
+          viewMode === 'full' ? 'min-w-full w-max' : 'w-full'
+        }`}>
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-3 py-2 whitespace-nowrap sticky top-0 bg-gray-50 z-10">
-                <button onClick={toggleSelectAllOnPage} className="p-1 rounded border">{isPageAllSelected? <CheckSquare className="h-4 w-4"/> : <Square className="h-4 w-4"/>}</button>
+              <SortHeader field="name">Product</SortHeader>
+              <SortHeader field="category">Category</SortHeader>
+              {viewMode === 'full' && <SortHeader field="sku">SKU</SortHeader>}
+              {viewMode === 'full' && <SortHeader field="supplier">Supplier</SortHeader>}
+              <SortHeader field="costPerUnit">Cost/Unit</SortHeader>
+              <SortHeader field="costPerServing">Cost/Serving</SortHeader>
+              {viewMode === 'full' && <SortHeader field="suggestedPrice">Suggested Price</SortHeader>}
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Status
               </th>
-              {columns.filter(c=>c.visible).map(col=> <Head key={col.id} col={col} />)}
-              <th className="text-left font-semibold px-4 py-2 whitespace-nowrap sticky top-0 bg-gray-50 z-10">Actions</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Actions
+              </th>
             </tr>
           </thead>
-          <tbody>
-            {pageRows.map(r => {
-              if (r.type==='family') return <FamRow key={`fam-${r.id}`} f={r.data} />;
-              if (r.type==='variant') return <VarRow key={`var-${r.id}`} fKey={r.familyKey} v={r.data} />;
-              return <ProdRow key={`prod-${r.id}`} p={r.data} />;
-            })}
-            {pageRows.length===0 && (
-              <tr><td colSpan={columns.filter(c=>c.visible).length + 2} className="px-4 py-8 text-center text-gray-500">No products found.</td></tr>
-            )}
+          <tbody className="bg-white divide-y divide-gray-200">
+            {sortedProducts.map((product) => (
+              <tr
+                key={product.id}
+                className={`hover:bg-gray-50 transition-colors ${
+                  !product.isActive ? 'opacity-60' : ''
+                }`}
+              >
+                {/* Product Name */}
+                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/3' : 'min-w-48'}`}>
+                  <div className="min-w-0">
+                    <div className={`text-sm font-medium text-gray-900 ${
+                      viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
+                    }`}>
+                      {product.name}
+                    </div>
+                    
+                    {/* Product type badge */}
+                    {showRecipeBadges && (
+                      <div className="mt-1">
+                        {getProductTypeBadge(product)}
+                      </div>
+                    )}
+                    
+                    {product.subcategory && (
+                      <div className={`text-xs text-gray-500 mt-1 ${
+                        viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
+                      }`}>
+                        {product.subcategory}
+                      </div>
+                    )}
+                    
+                    {/* Show additional info in compact mode */}
+                    {viewMode === 'compact' && (
+                      <div className="text-xs text-gray-400 mt-1 space-y-1">
+                        {product.sku && <div className="truncate">SKU: {product.sku}</div>}
+                        {product.supplier && <div className="truncate">{product.supplier}</div>}
+                      </div>
+                    )}
+                  </div>
+                </td>
+
+                {/* Category */}
+                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/6' : 'min-w-40'}`}>
+                  <div className="flex items-center min-w-0">
+                    <span className="text-lg mr-2 flex-shrink-0">
+                      {getCategoryIcon(product.category)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm text-gray-900 ${
+                        viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
+                      }`}>
+                        {getCategoryName(product.category)}
+                      </div>
+                      {viewMode === 'compact' && product.unitSize && (
+                        <div className="text-xs text-gray-500 truncate">
+                          {formatNumber(product.unitSize, 0)} {product.unitType}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </td>
+
+                {/* SKU - Full mode only */}
+                {viewMode === 'full' && (
+                  <td className="px-6 py-4 min-w-32">
+                    <span className="inline-block px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded whitespace-nowrap">
+                      {product.sku || 'N/A'}
+                    </span>
+                  </td>
+                )}
+
+                {/* Supplier - Full mode only */}
+                {viewMode === 'full' && (
+                  <td className="px-6 py-4 min-w-36">
+                    <div className="text-sm text-gray-900 whitespace-nowrap">
+                      {product.supplier || 'N/A'}
+                    </div>
+                  </td>
+                )}
+
+                {/* Cost per Unit */}
+                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/6' : 'min-w-24'}`}>
+                  <div className={`text-sm font-medium text-gray-900 ${
+                    viewMode === 'full' ? 'whitespace-nowrap' : ''
+                  }`}>
+                    {formatCurrency(product.costPerUnit)}
+                  </div>
+                  {viewMode === 'compact' && product.servingsPerUnit && (
+                    <div className="text-xs text-gray-500">
+                      {formatNumber(product.servingsPerUnit || 0)} servings
+                    </div>
+                  )}
+                </td>
+
+                {/* Cost per Serving */}
+                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/6' : 'min-w-32'}`}>
+                  <div className={`text-sm font-medium text-gray-900 ${
+                    viewMode === 'full' ? 'whitespace-nowrap' : ''
+                  }`}>
+                    {product.costPerServing ? formatCurrency(product.costPerServing) : 'N/A'}
+                  </div>
+                  
+                  {/* Multiple serving options indicator */}
+                  {product.multipleServings && product.multipleServings.length > 0 && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      {product.multipleServings.length} serving option{product.multipleServings.length !== 1 ? 's' : ''}
+                    </div>
+                  )}
+                  
+                  {/* Show serving size info */}
+                  {product.servingSize && product.servingUnit && (
+                    <div className={`text-xs text-gray-500 mt-1 ${
+                      viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
+                    }`}>
+                      {formatNumber(product.servingSize, 1)} {product.servingUnit}
+                    </div>
+                  )}
+                  
+                  {/* Compact mode pricing info */}
+                  {viewMode === 'compact' && product.suggestedPrice && (
+                    <div className="text-xs text-green-800 font-medium">
+                      Suggested: ${formatNumber(product.suggestedPrice, 2)}
+                    </div>
+                  )}
+                </td>
+
+                {/* Suggested Price - Full mode only */}
+                {viewMode === 'full' && (
+                  <td className="px-6 py-4 min-w-28">
+                    <div className="text-sm font-medium text-green-800 whitespace-nowrap">
+                      {product.suggestedPrice ? formatCurrency(product.suggestedPrice) : 'N/A'}
+                    </div>
+                  </td>
+                )}
+
+                {/* Status */}
+                <td className="px-6 py-4">
+                  <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                    product.isActive !== false
+                      ? 'bg-green-100 text-green-800'
+                      : 'bg-gray-100 text-gray-800'
+                  }`}>
+                    {product.isActive !== false ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+
+                {/* Actions */}
+                <td className="px-6 py-4">
+                  <div className="flex items-center justify-center space-x-1">
+                    <button
+                      onClick={() => onEdit(product)}
+                      className="text-indigo-600 hover:text-indigo-900 p-1 rounded hover:bg-indigo-50 transition-colors"
+                      title="Edit product"
+                    >
+                      <Edit2 className="h-4 w-4" />
+                    </button>
+                    
+                    <button
+                      onClick={() => onToggleActive(product.id)}
+                      className={`p-1 rounded transition-colors ${
+                        product.isActive !== false
+                          ? 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                          : 'text-green-600 hover:text-green-900 hover:bg-green-50'
+                      }`}
+                      title={product.isActive !== false ? 'Deactivate' : 'Activate'}
+                    >
+                      {product.isActive !== false ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                    
+                    <button
+                      onClick={() => onDelete(product.id)}
+                      className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50 transition-colors"
+                      title="Delete product"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
-
-      {/* pagination */}
-      <div className="flex items-center justify-between px-4 py-3 border-t text-sm">
-        <div className="text-gray-600">Page {safePage} of {totalPages}</div>
-        <div className="flex items-center gap-2">
-          <button onClick={()=>{ setPage(1); clearSel(); }} disabled={safePage===1} className="px-2 py-1 rounded border disabled:opacity-50">First</button>
-          <button onClick={()=>{ setPage(p=>Math.max(1,p-1)); clearSel(); }} disabled={safePage===1} className="px-2 py-1 rounded border disabled:opacity-50">Prev</button>
-          <button onClick={()=>{ setPage(p=>Math.min(totalPages,p+1)); clearSel(); }} disabled={safePage===totalPages} className="px-2 py-1 rounded border disabled:opacity-50">Next</button>
-          <button onClick={()=>{ setPage(totalPages); clearSel(); }} disabled={safePage===totalPages} className="px-2 py-1 rounded border disabled:opacity-50">Last</button>
+      
+      {/* Table Footer with Summary (Removed Total Value) */}
+      <div className="bg-gray-50 px-6 py-3 border-t border-gray-200">
+        <div className="flex items-center justify-between text-sm text-gray-600">
+          <span>
+            {products.length} product{products.length !== 1 ? 's' : ''} total
+          </span>
+          <div className="flex items-center space-x-6">
+            <span>
+              Active: {products.filter(p => p.isActive !== false).length}
+            </span>
+            <span>
+              Recipes: {products.filter(p => p.isRecipeBased || p.category === 'batchCocktails').length}
+            </span>
+            <span>
+              Ingredients: {products.filter(p => p.productType === 'ingredient').length}
+            </span>
+          </div>
         </div>
       </div>
     </div>
   );
-}
+};
+
+export default ProductTable;

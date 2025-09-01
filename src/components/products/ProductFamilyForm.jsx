@@ -1,702 +1,1419 @@
-// src/components/products/ProductFamilyForm.jsx — v5.2 (Stepper + Recipe Mode + Gen All SKUs)
-// Drop-in replacement using the SAME filename/export.
-// Key upgrades in v5.2:
-// - Detailed/clean stepper UI
-// - Recipe Mode: compute batch cost from ingredient Products (if available) or manual hints
-// - In Recipe Mode, purchase format cost is derived from the recipe (per-L multiplied by output size)
-// - One-click "Generate all SKUs" button (fills missing SKUs only)
-// - ASCII-only to avoid parser issues
+// src/components/products/ProductFamilyForm.jsx
+// v7.0 — Unified wizard matching Aslan flow
+// Modes: Full (beer/packaged), Recipe (batch cocktails), Simple (cider/kombucha), Ingredient
+// Output: onSubmit(productsArray, familyMeta)
+//
+// Highlights:
+// - Full/Simple: Purchase Unit Preset + Purchase Quantity (items per purchase) + Each Size (qty+unit)
+//   -> purchaseMl = quantity * eachSizeMl
+// - Beer draft presets + conditional "Wholesale (½ BBL / ⅙ BBL)" serving
+// - Servings UI simplified (no redundant quick-size column)
+// - Recipe: Batch qty+unit + Batch SKU, live rollups
+// - Uses optional utils/aslanbranding for look/feel
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { X, Save, Plus, Trash2, Wand2, ChevronRight, ChevronLeft } from 'lucide-react';
-import * as productSvc from '../../services/productService';
-import { fohCategories } from '../../data/categories';
-import { servingsPerPurchase, costPerServing } from '../../utils/units';
+import React, { useMemo, useState, useEffect } from "react";
+import {
+  ML_PER_US_FL_OZ,
+  ML_PER_L,
+  ML_PER_US_GAL,
+  coerceServingLabelToMl,
+  computePurchaseMl,
+  formatVolume,
+  servingsPerPurchaseExact,
+  servingsPerPurchasePourable,
+} from "../../utils/units";
 
-const UNIT_OPTS = ['each', 'ml', 'L', 'oz', 'gal', 'g', 'lb'];
-
-const DEFAULT = {
-  name: '',
-  category: 'Beer',
-  vendor: '',
-  description: '',
-  nameTemplate: '{family} - {variant} - {serving}',
-  hasRecipe: false,
-  recipe: { batchSize: 18.927, batchUnit: 'L', ingredients: [] }, // default 5 gal in liters
-  variants: [],
-};
-
-// --- unit helpers ---
-const OZ_TO_L = 0.0295735295625; // fluid ounce -> liter
-const GAL_TO_L = 3.785411784;
-const LB_TO_G = 453.59237;
-
-function isVol(u){ return ['ml','L','oz','gal'].includes(u); }
-function isMass(u){ return ['g','lb'].includes(u); }
-function isEach(u){ return u === 'each'; }
-
-function toLiters(v,u){
-  if (u==='L') return v;
-  if (u==='ml') return v/1000;
-  if (u==='oz') return v*OZ_TO_L;
-  if (u==='gal') return v*GAL_TO_L;
-  return NaN;
-}
-function toGrams(v,u){
-  if (u==='g') return v;
-  if (u==='lb') return v*LB_TO_G;
-  return NaN;
-}
-
-function sameKind(a,b){
-  if (isVol(a) && isVol(b)) return 'vol';
-  if (isMass(a) && isMass(b)) return 'mass';
-  if (isEach(a) && isEach(b)) return 'each';
-  return null;
-}
-
-// SKU helpers
-function slug(s = '', max = 12) { return (s + '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, max); }
-function code(str = '', len = 3) { const clean = (str || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase(); return clean.slice(0, len).padEnd(len, 'X'); }
-function suggestSku({ vendor, category, family, variant, serving }){ const v = code(vendor,3), c=code(category,2), f=slug(family,8), s=slug(serving,6); return [v,c,f,s].filter(Boolean).join('-'); }
-function replaceAllStr(s,find,rep){ return (s||'').split(find).join(rep); }
-function applyTemplate(tpl,ctx){ let out=tpl||''; out=replaceAllStr(out,'{family}',ctx.family||''); out=replaceAllStr(out,'{variant}',ctx.variant||''); out=replaceAllStr(out,'{serving}',ctx.serving||''); return out.trim(); }
-
-export default function ProductFamilyForm({ isOpen, onClose, seed, onCreated }){
-  const [data, setData] = useState(DEFAULT);
-  const [step, setStep] = useState(0);
-  const [allProducts, setAllProducts] = useState([]); // for recipe linking
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const seeded = seed ? { ...DEFAULT, ...seed } : DEFAULT;
-    setData(seeded);
-    setStep(0);
-    (async () => {
-      // best-effort load for ingredient linking; safe if function not present
-      try {
-        if (typeof productSvc.fetchAll === 'function') {
-          const rows = await productSvc.fetchAll();
-          setAllProducts(Array.isArray(rows) ? rows : []);
-        }
-      } catch {}
-    })();
-  }, [isOpen, seed]);
-
-  const setPath = (path, value) => {
-    setData((prev) => {
-      const next = { ...prev };
-      const parts = path.split('.');
-      let cur = next;
-      for (let i = 0; i < parts.length - 1; i++) {
-        const k = parts[i];
-        cur[k] = Array.isArray(cur[k]) ? [...cur[k]] : { ...(cur[k] || {}) };
-        cur = cur[k];
-      }
-      cur[parts[parts.length - 1]] = value;
-      return next;
-    });
-  };
-
-  const steps = ['Family', 'Formats', 'Servings', 'SKUs', 'Review'];
-  const next = () => setStep((s) => Math.min(steps.length - 1, s + 1));
-  const prev = () => setStep((s) => Math.max(0, s - 1));
-
-  // --- recipe cost calculator ---
-  const ingredientRows = data.recipe?.ingredients || [];
-
-  function findProductByNameOrSku(txt){
-    const t = (txt||'').trim().toLowerCase();
-    if (!t) return null;
-    return allProducts.find(p => (p.name||'').toLowerCase()===t || (p.sku||'').toLowerCase()===t) || null;
+// ---- Branding (soft import) ----
+function getBranding() {
+  try {
+    // eslint-disable-next-line global-require
+    const mod = require("../../utils/aslanBranding");
+    const b = mod?.default || mod || {};
+    return {
+      colors: {
+        primary: b.colors?.primary || "#111111",
+        surface: b.colors?.surface || "#ffffff",
+        surfaceMuted: b.colors?.surfaceMuted || "#f6f7f8",
+        border: b.colors?.border || "#e5e7eb",
+        text: b.colors?.text || "#111827",
+        hint: b.colors?.hint || "#6b7280",
+        overlay: b.colors?.overlay || "rgba(0,0,0,0.4)",
+      },
+      radii: {
+        card: b.radii?.card || "1rem",
+        pill: b.radii?.pill || "999px",
+        button: b.radii?.button || "0.75rem",
+        field: b.radii?.field || "0.5rem",
+        modal: b.radii?.modal || "1rem",
+      },
+      classes: {
+        buttonPrimary: b.classes?.buttonPrimary || "bg-black text-white hover:opacity-90 transition",
+        buttonSecondary: b.classes?.buttonSecondary || "border hover:bg-gray-50 transition",
+        chip: b.classes?.chip || "rounded-full border px-3 py-1 text-sm hover:bg-gray-50",
+        input: b.classes?.input || "border rounded px-3 py-2",
+        tableHead: b.classes?.tableHead || "bg-gray-50",
+      },
+    };
+  } catch {
+    return {
+      colors: {
+        primary: "#111111",
+        surface: "#ffffff",
+        surfaceMuted: "#f6f7f8",
+        border: "#e5e7eb",
+        text: "#111827",
+        hint: "#6b7280",
+        overlay: "rgba(0,0,0,0.4)",
+      },
+      radii: { card: "1rem", pill: "999px", button: "0.75rem", field: "0.5rem", modal: "1rem" },
+      classes: {
+        buttonPrimary: "bg-black text-white hover:opacity-90 transition",
+        buttonSecondary: "border hover:bg-gray-50 transition",
+        chip: "rounded-full border px-3 py-1 text-sm hover:bg-gray-50",
+        input: "border rounded px-3 py-2",
+        tableHead: "bg-gray-50",
+      },
+    };
   }
+}
+const BRAND = getBranding();
 
-  function costFromLinkedProduct(prod, qty, unit){
-    if (!prod || !prod.purchaseUnit || !prod.costPerPurchase) return NaN;
-    const pu = prod.purchaseUnit;
-    // derive unit cost
-    if (isVol(pu.baseUnit) && isVol(unit)){
-      const sizeL = toLiters(pu.size, pu.baseUnit);
-      const qtyL = toLiters(qty, unit);
-      if (!isFinite(sizeL) || !isFinite(qtyL) || sizeL<=0) return NaN;
-      const perL = prod.costPerPurchase / sizeL;
-      return perL * qtyL;
-    }
-    if (isMass(pu.baseUnit) && isMass(unit)){
-      const sizeG = toGrams(pu.size, pu.baseUnit);
-      const qtyG = toGrams(qty, unit);
-      if (!isFinite(sizeG) || !isFinite(qtyG) || sizeG<=0) return NaN;
-      const perG = prod.costPerPurchase / sizeG;
-      return perG * qtyG;
-    }
-    if (isEach(pu.baseUnit) && isEach(unit)){
-      const pack = pu.packQty || 1;
-      const perEach = prod.costPerPurchase / (pack * (pu.size || 1));
-      return perEach * qty;
-    }
-    return NaN; // kind mismatch
+// ---------- Presets & helpers ----------
+const BEER_SERVING_PRESETS = [
+  ".5L",
+  ".3L",
+  "12oz",
+  "10oz",
+  "8oz",
+  "4oz",
+  "Taster (2oz)",
+  "Pitcher (64oz)",
+  "32oz Growler",
+  "64oz Growler",
+];
+const CIDER_SERVING_PRESETS = ["12oz", "4oz", "Taster (2oz)"];
+const KOMBUCHA_SERVING_PRESETS = ["12oz", "4oz", "Taster (2oz)"];
+
+const PURCHASE_PRESETS = [
+  // Draft
+  { key: "keg_half", label: "½ BBL Keg", kind: "keg", eachMl: computePurchaseMl("1/2 BBL"), defaultQty: 1 },
+  { key: "keg_sixth", label: "⅙ BBL Keg", kind: "keg", eachMl: computePurchaseMl("1/6 BBL"), defaultQty: 1 },
+  { key: "keg_20l", label: "20L Keg", kind: "keg", eachMl: computePurchaseMl("20L"), defaultQty: 1 },
+  { key: "keg_50l", label: "50L Keg", kind: "keg", eachMl: computePurchaseMl("50L"), defaultQty: 1 },
+  // Packaged beer (cans/bottles)
+  { key: "case_24x12", label: "Case (24×12oz cans)", kind: "pack", eachMl: 12 * ML_PER_US_FL_OZ, defaultQty: 24 },
+  { key: "pack_6x12", label: "6-Pack (6×12oz cans)", kind: "pack", eachMl: 12 * ML_PER_US_FL_OZ, defaultQty: 6 },
+  { key: "single_12", label: "Single (12oz can)", kind: "pack", eachMl: 12 * ML_PER_US_FL_OZ, defaultQty: 1 },
+  { key: "bottle_500", label: "Single (500ml bottle)", kind: "pack", eachMl: 500, defaultQty: 1 },
+];
+
+function presetByKey(key) {
+  return PURCHASE_PRESETS.find((p) => p.key === key) || null;
+}
+
+function toMlFromQtyUnit(q, unit) {
+  const qty = Number(q) || 0;
+  switch (unit) {
+    case "ml":
+      return qty;
+    case "l":
+      return qty * ML_PER_L;
+    case "gal":
+      return qty * ML_PER_US_GAL;
+    case "floz":
+      return qty * ML_PER_US_FL_OZ;
+    default:
+      return 0;
   }
+}
 
-  const recipeCalc = useMemo(() => {
-    let total = 0;
-    const lines = ingredientRows.map((r) => {
-      const linked = r.linkedName ? findProductByNameOrSku(r.linkedName) : null;
-      const fromLinked = linked ? costFromLinkedProduct(linked, +r.quantity || 0, r.unit || 'L') : NaN;
-      const lineCost = isFinite(fromLinked) ? fromLinked : (+r.costHint || 0);
-      total += lineCost;
-      return { ...r, linkedProduct: linked, lineCost: +lineCost.toFixed(4) };
-    });
-    const batchKind = isVol(data.recipe.batchUnit) ? 'vol' : isMass(data.recipe.batchUnit) ? 'mass' : isEach(data.recipe.batchUnit) ? 'each' : null;
-    let perUnit = 0;
-    if (batchKind === 'vol'){
-      const sizeL = toLiters(data.recipe.batchSize || 0, data.recipe.batchUnit);
-      perUnit = sizeL>0 ? total / sizeL : 0; // cost per liter
-    } else if (batchKind === 'mass'){
-      const sizeG = toGrams(data.recipe.batchSize || 0, data.recipe.batchUnit);
-      perUnit = sizeG>0 ? total / sizeG : 0; // cost per gram
-    } else if (batchKind === 'each'){
-      const sizeE = data.recipe.batchSize || 1;
-      perUnit = sizeE>0 ? total / sizeE : 0; // cost per each
+function fromMlToBest(ml) {
+  if (!Number.isFinite(ml) || ml <= 0) return { qty: "", unit: "ml" };
+  if (ml >= 1000 && ml % ML_PER_L === 0) return { qty: ml / ML_PER_L, unit: "l" };
+  if (ml >= ML_PER_US_GAL && (ml / ML_PER_US_GAL) % 1 === 0) return { qty: ml / ML_PER_US_GAL, unit: "gal" };
+  if (ml % ML_PER_US_FL_OZ === 0) return { qty: ml / ML_PER_US_FL_OZ, unit: "floz" };
+  return { qty: ml, unit: "ml" };
+}
+
+function QtyUnit({ label, qty, unit, onChange, hint }) {
+  return (
+    <div>
+      {label && <label className="block text-sm mb-1">{label}</label>}
+      <div className="flex gap-2 items-start">
+        <input
+          type="number"
+          className={`${BRAND.classes.input} w-28`}
+          placeholder="e.g., 5"
+          value={Number.isFinite(qty) ? qty : ""}
+          onChange={(e) => onChange({ qty: Number(e.target.value), unit })}
+        />
+        <select
+          className={`${BRAND.classes.input} w-28`}
+          value={unit}
+          onChange={(e) => onChange({ qty, unit: e.target.value })}
+        >
+          <option value="ml">ml</option>
+          <option value="l">L</option>
+          <option value="gal">US gal</option>
+          <option value="floz">US fl oz</option>
+        </select>
+        {hint}
+      </div>
+    </div>
+  );
+}
+
+function slug(s) {
+  return (s || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 16);
+}
+function servingCode(ml) {
+  if (!Number.isFinite(ml) || ml <= 0) return "UNK";
+  if (ml >= 1000) return `${Math.round(ml / 10) * 10}ML`;
+  const oz = ml / ML_PER_US_FL_OZ;
+  return `${Math.round(oz * 10) / 10}OZ`.replace(".", "");
+}
+function genSku(familyName, variantLabel, ml, index = 0) {
+  const fam = slug(familyName).slice(0, 6);
+  const varc = slug(variantLabel || "VAR").slice(0, 4);
+  return `${fam}-${varc}-${servingCode(ml)}${index ? "-" + index : ""}`;
+}
+
+// ------------- Component -------------
+export default function ProductFamilyForm({
+  defaultMode = "full",
+  productOptions = [],
+  seedFamily,
+  seedRows,
+  onSubmit,
+  onCancel,
+}) {
+  // Detect mode when editing
+  const detectedMode = useMemo(() => {
+    if (Array.isArray(seedRows) && seedRows.length) {
+      if (seedRows.some((r) => r.familyRecipe)) return "recipe";
+      if (seedRows.every((r) => r.isIngredient && r.isSellable === false)) return "ingredient";
     }
-    return { lines, total: +total.toFixed(4), perUnit: +perUnit.toFixed(6), batchKind };
-  }, [ingredientRows, allProducts, data.recipe.batchSize, data.recipe.batchUnit]);
+    return defaultMode;
+  }, [seedRows, defaultMode]);
 
-  // --- Step 2: formats ---
-  const addVariant = () => setData((d) => ({
-    ...d,
-    variants: [
-      ...d.variants,
-      { label: d.hasRecipe ? 'Batch Output' : '1/2 BBL', costPerPurchase: 0, purchaseUnit: { name: d.hasRecipe ? 'batch' : 'keg', size: d.hasRecipe ? (d.recipe.batchSize||18.927) : 58.67, baseUnit: d.hasRecipe ? (d.recipe.batchUnit||'L') : 'L', packQty: 1 }, servingOptions: [] },
-    ],
-  }));
-  const removeVariant = (idx) => setData((d) => ({ ...d, variants: d.variants.filter((_, i) => i !== idx) }));
+  const [mode, setMode] = useState(detectedMode);
 
-  // --- Step 3: servings ---
-  const addServing = (vidx) => setData((d) => {
-    const v = d.variants[vidx];
-    const nextOpts = [ ...(v.servingOptions || []), { label: '', size: 0, baseUnit: v.purchaseUnit.baseUnit || 'L', yieldLossPct: 0, sku: '', posSku: '' } ];
-    const variants = d.variants.map((x, i) => (i === vidx ? { ...v, servingOptions: nextOpts } : x));
-    return { ...d, variants };
-  });
-  const removeServing = (vidx, sidx) => setData((d) => {
-    const v = d.variants[vidx];
-    const nextOpts = (v.servingOptions || []).filter((_, i) => i !== sidx);
-    const variants = d.variants.map((x, i) => (i === vidx ? { ...v, servingOptions: nextOpts } : x));
-    return { ...d, variants };
-  });
+  // Family header
+  const [familyName, setFamilyName] = useState(seedFamily?.name || "");
+  const [category, setCategory] = useState(seedFamily?.category || "");
+  const [notes, setNotes] = useState("");
 
-  // one-click beer presets
-  const beerPresets = (vidx) => setData((d) => {
-    const v = d.variants[vidx];
-    const pu = v.purchaseUnit || { size: 0, baseUnit: 'L' };
-    const presets = [
-      { label: '0.5L Pour', size: 0.5, baseUnit: 'L' },
-      { label: '0.3L Pour', size: 0.3, baseUnit: 'L' },
-      { label: '4oz', size: 4, baseUnit: 'oz' },
-      { label: 'Taster (2oz)', size: 2, baseUnit: 'oz' },
-      { label: 'Pitcher (64oz)', size: 64, baseUnit: 'oz' },
-      { label: 'Growler 32oz', size: 32, baseUnit: 'oz' },
-      { label: 'Growler 64oz', size: 64, baseUnit: 'oz' },
-      { label: 'Whole Keg', size: pu.size || 0, baseUnit: pu.baseUnit || 'L' },
-    ];
-    const nextOpts = presets.map((p) => ({ ...p, yieldLossPct: 0, sku: '', posSku: '' }));
-    const variants = d.variants.map((x, i) => (i === vidx ? { ...v, servingOptions: nextOpts } : x));
-    return { ...d, variants };
-  });
-
-  // --- Step 4: SKU grid rows ---
-  const skuRows = useMemo(() => {
-    const rows = [];
-    (data.variants || []).forEach((v, vidx) => {
-      (v.servingOptions || []).forEach((s, sidx) => {
-        rows.push({
-          key: `${vidx}:${sidx}`,
-          variant: v.label,
-          serving: s.label || `${s.size} ${s.baseUnit}`,
-          size: s.size,
-          baseUnit: s.baseUnit,
-          sku: s.sku || '',
-          posSku: s.posSku || '',
-          setSku: (val) => setData((d) => { const n = { ...d }; n.variants[vidx].servingOptions[sidx].sku = val; return n; }),
-          setPosSku: (val) => setData((d) => { const n = { ...d }; n.variants[vidx].servingOptions[sidx].posSku = val; return n; }),
-          setServing: (val) => setData((d) => { const n = { ...d }; n.variants[vidx].servingOptions[sidx].label = val; return n; }),
-          suggest: () => suggestSku({ vendor: data.vendor, category: data.category, family: data.name, variant: v.label, serving: s.label || `${s.size} ${s.baseUnit}` }),
-        });
-      });
-    });
-    return rows;
-  }, [data]);
-
-  const genAllSkus = () => setData((d) => {
-    const n = { ...d };
-    (n.variants||[]).forEach((v) => {
-      (v.servingOptions||[]).forEach((s) => {
-        if (!s.sku || !s.sku.trim()){
-          s.sku = suggestSku({ vendor: n.vendor, category: n.category, family: n.name, variant: v.label, serving: s.label || `${s.size} ${s.baseUnit}` });
-        }
-      });
-    });
-    return n;
-  });
-
-  // --- review stats ---
-  const reviewStats = useMemo(() => {
-    let totalProducts = 0;
-    let maxCps = 0;
-    (data.variants || []).forEach((v) => {
-      const pu = v.purchaseUnit || {};
-      (v.servingOptions || []).forEach((s) => {
-        totalProducts += 1;
-        const sp = Math.floor(servingsPerPurchase(pu, s));
-        const cps = costPerServing((data.hasRecipe ? 0 : (v.costPerPurchase || 0)), sp); // display only; in recipe mode we show per-variant computed below
-        maxCps = Math.max(maxCps, cps || 0);
-      });
-    });
-    return { totalProducts, minCostPer: +maxCps.toFixed(4) };
-  }, [data]);
-
-  // --- materialize ---
-  const materialize = async () => {
-    const famId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
-
-    // Compute per-unit recipe cost if in recipe mode
-    let recipePerVolUnit = 0; // cost per liter if volume; per gram if mass; per each if count
-    if (data.hasRecipe && recipeCalc.batchKind){
-      recipePerVolUnit = recipeCalc.perUnit; // name kept generic; we handle kind below
-    }
-
-    const created = [];
-    for (const v of (data.variants || [])) {
-      const pu = v.purchaseUnit || {};
-
-      // Determine costPerPurchase for this variant
-      let costPerPurchase = v.costPerPurchase || 0;
-      if (data.hasRecipe && recipeCalc.batchKind){
-        if (recipeCalc.batchKind === 'vol' && isVol(pu.baseUnit)){
-          const sizeL = toLiters(pu.size||0, pu.baseUnit);
-          costPerPurchase = isFinite(sizeL) ? recipePerVolUnit * sizeL : 0;
-        } else if (recipeCalc.batchKind === 'mass' && isMass(pu.baseUnit)){
-          const sizeG = toGrams(pu.size||0, pu.baseUnit);
-          costPerPurchase = isFinite(sizeG) ? recipePerVolUnit * sizeG : 0;
-        } else if (recipeCalc.batchKind === 'each' && isEach(pu.baseUnit)){
-          const sizeE = pu.size || 1;
-          costPerPurchase = recipePerVolUnit * sizeE;
-        } else {
-          // kind mismatch; fallback to entered number
-          costPerPurchase = v.costPerPurchase || 0;
-        }
-      }
-
-      for (const s of (v.servingOptions || [])) {
-        const servingName = s.label || `${s.size} ${s.baseUnit}`;
-        const servings = Math.floor(servingsPerPurchase(pu, s));
-        const cps = costPerServing(costPerPurchase, servings);
-        const name = applyTemplate(data.nameTemplate, { family: data.name, variant: v.label, serving: servingName });
-        const payload = {
-          name,
-          sku: (s.sku || '').trim(),
-          pos: s.posSku ? { system: 'TOAST', sku: (s.posSku || '').trim() } : undefined,
-          category: data.category,
-          subcategory: v.label,
-          vendor: data.vendor,
-          description: data.description,
-          isActive: true,
-          familyId: famId,
-          familyName: data.name,
-          purchaseUnit: { ...pu },
-          servingUnit: { name: servingName, size: s.size, baseUnit: s.baseUnit, yieldLossPct: s.yieldLossPct || 0 },
-          costPerPurchase,
-          servingsPerPurchase: servings,
-          costPerServing: +cps.toFixed(4),
-          suggestedPrice: undefined,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+  // Full/Simple variants
+  const [variants, setVariants] = useState(() => {
+    if (seedRows && seedRows.length && detectedMode !== "recipe" && detectedMode !== "ingredient") {
+      // Rehydrate variants from rows
+      const byVar = new Map();
+      for (const r of seedRows) {
+        const key = r.subcategory || "";
+        const v = byVar.get(key) || {
+          id: key || `var_${Math.random().toString(36).slice(2, 7)}`,
+          label: key,
+          // We don't know their original preset/qty; derive each as one purchase
+          presetKey: "",
+          purchaseQty: 1,
+          eachQty: fromMlToBest(Number.isFinite(r.purchaseMl) ? r.purchaseMl : 0).qty,
+          eachUnit: fromMlToBest(Number.isFinite(r.purchaseMl) ? r.purchaseMl : 0).unit,
+          costPerPurchase: Number(r.costPerPurchase) || 0,
+          purchaseMl: Number(r.purchaseMl) || 0,
+          servings: [],
         };
-        if (data.hasRecipe){
-          payload.familyRecipe = {
-            batchSize: data.recipe.batchSize,
-            batchUnit: data.recipe.batchUnit,
-            totalCost: recipeCalc.total,
-            ingredients: ingredientRows.map((r) => ({ linkedName: r.linkedName || '', quantity: r.quantity || 0, unit: r.unit || 'L', costHint: r.costHint || 0 })),
-          };
-        }
-        const row = await productSvc.create(payload);
-        created.push(row);
+        v.servings.push({
+          id: r.id || `srv_${Math.random().toString(36).slice(2, 7)}`,
+          label: r.servingUnit || "",
+          servingMl: Number.isFinite(r.servingMl) ? r.servingMl : coerceServingLabelToMl(r.servingUnit || ""),
+          sku: r.sku || "",
+          posSku: r.posSku || "",
+        });
+        byVar.set(key, v);
+      }
+      return Array.from(byVar.values());
+    }
+    // Default new variant (½ BBL keg)
+    return [
+      {
+        id: `var_${Math.random().toString(36).slice(2, 7)}`,
+        label: "",
+        presetKey: "keg_half",
+        purchaseQty: 1,
+        eachQty: fromMlToBest(computePurchaseMl("1/2 BBL")).qty,
+        eachUnit: fromMlToBest(computePurchaseMl("1/2 BBL")).unit,
+        purchaseMl: computePurchaseMl("1/2 BBL"),
+        costPerPurchase: 0,
+        servings: [],
+      },
+    ];
+  });
+
+  // Recipe state
+  const [batchQty, setBatchQty] = useState(5);
+  const [batchUnit, setBatchUnit] = useState("gal");
+  const batchVolumeMl = useMemo(() => toMlFromQtyUnit(batchQty, batchUnit), [batchQty, batchUnit]);
+  const [batchSku, setBatchSku] = useState("");
+
+  const [recipeIngredients, setRecipeIngredients] = useState([]);
+  const [recipeServings, setRecipeServings] = useState([]);
+
+  // Ingredient state
+  const [ingUnitKind, setIngUnitKind] = useState("ml"); // 'ml' | 'g'
+  const [ingPurchaseLabel, setIngPurchaseLabel] = useState(seedRows?.[0]?.purchaseUnit || "");
+  const [ingQty, setIngQty] = useState(
+    Number.isFinite(seedRows?.[0]?.purchaseMl) ? seedRows[0].purchaseMl : 1000
+  );
+  const [ingQtyUnit, setIngQtyUnit] = useState("ml");
+  const [ingCostPerPurchase, setIngCostPerPurchase] = useState(
+    Number.isFinite(seedRows?.[0]?.costPerPurchase) ? seedRows[0].costPerPurchase : 0
+  );
+  const ingPurchaseQtyMl = useMemo(
+    () => (ingUnitKind === "ml" ? toMlFromQtyUnit(ingQty, ingQtyUnit) : 0),
+    [ingQty, ingQtyUnit, ingUnitKind]
+  );
+  const ingCostPerUnit = useMemo(() => {
+    const q = ingUnitKind === "ml" ? (ingPurchaseQtyMl || 0) : (Number(ingQty) || 0);
+    const c = Number(ingCostPerPurchase) || 0;
+    return q > 0 ? c / q : 0;
+  }, [ingPurchaseQtyMl, ingQty, ingUnitKind, ingCostPerPurchase]);
+
+  // Family meta
+  const familyMeta = useMemo(
+    () => ({
+      id: seedFamily?.id || `fam_${slug(familyName) || Math.random().toString(36).slice(2, 7)}`,
+      name: familyName || "(Family)",
+      category: category || "",
+      notes,
+      mode,
+    }),
+    [familyName, category, notes, mode, seedFamily]
+  );
+
+  // ------- Variant mutators -------
+  const setVariant = (vid, updater) =>
+    setVariants((prev) => prev.map((v) => (v.id === vid ? updater(v) : v)));
+  const addVariant = () =>
+    setVariants((prev) => [
+      ...prev,
+      {
+        id: `var_${Math.random().toString(36).slice(2, 7)}`,
+        label: "",
+        presetKey: "keg_sixth",
+        purchaseQty: 1,
+        eachQty: fromMlToBest(computePurchaseMl("1/6 BBL")).qty,
+        eachUnit: fromMlToBest(computePurchaseMl("1/6 BBL")).unit,
+        purchaseMl: computePurchaseMl("1/6 BBL"),
+        costPerPurchase: 0,
+        servings: [],
+      },
+    ]);
+  const removeVariant = (vid) => setVariants((prev) => prev.filter((v) => v.id !== vid));
+
+  // Keep purchaseMl in sync when qty/each changes
+  useEffect(() => {
+    setVariants((prev) =>
+      prev.map((v) => {
+        const eachMl = toMlFromQtyUnit(v.eachQty, v.eachUnit);
+        const purchaseMl = (Number(v.purchaseQty) || 0) * (eachMl || 0);
+        return { ...v, purchaseMl };
+      })
+    );
+  }, [variants.map((v) => [v.purchaseQty, v.eachQty, v.eachUnit]).flat().join("|")]); // minimal re-run hack
+
+  const onPresetChange = (vid, key) =>
+    setVariant(vid, (v) => {
+      const p = presetByKey(key);
+      if (!p) return { ...v, presetKey: "" };
+      const best = fromMlToBest(p.eachMl);
+      const purchaseMl = p.defaultQty * p.eachMl;
+      return {
+        ...v,
+        presetKey: key,
+        purchaseQty: p.defaultQty,
+        eachQty: best.qty,
+        eachUnit: best.unit,
+        purchaseMl,
+      };
+    });
+
+  // Serving rows
+  const addServingRow = (vid, label = "") =>
+    setVariant(vid, (v) => ({
+      ...v,
+      servings: [
+        ...v.servings,
+        {
+          id: `srv_${Math.random().toString(36).slice(2, 7)}`,
+          label,
+          servingMl: coerceServingLabelToMl(label) || 0,
+          sku: "",
+          posSku: "",
+        },
+      ],
+    }));
+  const removeServingRow = (vid, sid) =>
+    setVariant(vid, (v) => ({ ...v, servings: v.servings.filter((s) => s.id !== sid) }));
+  const setServingField = (vid, sid, field, value) =>
+    setVariant(vid, (v) => ({
+      ...v,
+      servings: v.servings.map((s) => (s.id === sid ? { ...s, [field]: value } : s)),
+    }));
+
+  // Presets (draft / cider / kombucha)
+  const addBeerPresets = (vid) => BEER_SERVING_PRESETS.forEach((p) => addServingRow(vid, p));
+  const addCiderPresets = (vid) => CIDER_SERVING_PRESETS.forEach((p) => addServingRow(vid, p));
+  const addKombuchaPresets = (vid) => KOMBUCHA_SERVING_PRESETS.forEach((p) => addServingRow(vid, p));
+
+  // Conditional wholesale serving for kegs
+  const addWholesaleServingIfKeg = (v) => {
+    const p = presetByKey(v.presetKey);
+    if (!p || p.kind !== "keg") return null;
+    const label = p.key === "keg_half" ? "½ BBL wholesale" : p.key === "keg_sixth" ? "⅙ BBL wholesale" : "Wholesale (Keg)";
+    return { label, ml: v.purchaseMl || toMlFromQtyUnit(v.eachQty, v.eachUnit) * (v.purchaseQty || 1) };
+  };
+
+  // SKU tools
+  const bulkPasteSkus = (vid, text) =>
+    setVariant(vid, (v) => {
+      const lines = (text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const map = new Map();
+      for (const line of lines) {
+        const [servingLabel, sku, posSku] = line.split(/[\t,]+/).map((x) => x.trim());
+        if (servingLabel && sku) map.set(servingLabel.toLowerCase(), { sku, posSku: posSku || "" });
+      }
+      return {
+        ...v,
+        servings: v.servings.map((s) => {
+          const hit = map.get((s.label || "").toLowerCase());
+          return hit ? { ...s, ...hit } : s;
+        }),
+      };
+    });
+
+  const generateSkus = (vid) =>
+    setVariant(vid, (v) => ({
+      ...v,
+      servings: v.servings.map((s, i) => {
+        if (s.sku?.trim()) return s;
+        const ml = s.servingMl || coerceServingLabelToMl(s.label || "");
+        return { ...s, sku: genSku(familyName, v.label, ml, i + 1) };
+      }),
+    }));
+
+  // ------- Recipe calcs -------
+  const recipeCost = useMemo(() => {
+    if (mode !== "recipe") return { totalCost: 0, costPerMl: 0 };
+    let total = 0;
+    for (const ing of recipeIngredients) {
+      const linked = productOptions.find((p) => p.id === ing.productId);
+      const unitCost =
+        ing.unit === "ml" ? (linked?.costPerMl ?? ing.fallbackCostPerUnit ?? 0) : (linked?.costPerG ?? ing.fallbackCostPerUnit ?? 0);
+      total += (ing.qty || 0) * unitCost;
+    }
+    const perMl = batchVolumeMl > 0 ? total / batchVolumeMl : 0;
+    return { totalCost: total, costPerMl: perMl };
+  }, [mode, recipeIngredients, productOptions, batchVolumeMl]);
+
+  // ------- Submit builders -------
+  function buildProductsFullOrSimple() {
+    const out = [];
+    for (const v of variants) {
+      const vPurchaseMl = Number(v.purchaseMl) || 0;
+      const vCost = Number(v.costPerPurchase) || 0;
+
+      for (const s of v.servings) {
+        const sMl = Number(s.servingMl) || coerceServingLabelToMl(s.label || "") || 0;
+        const per = vPurchaseMl > 0 && sMl > 0 ? servingsPerPurchasePourable(vPurchaseMl, sMl) : 0;
+        const cps = per > 0 ? vCost / per : 0;
+
+        out.push({
+          familyId: familyMeta.id,
+          familyName: familyMeta.name,
+          subcategory: v.label || "",
+          category: category || "",
+          isSellable: true,
+          isIngredient: false,
+          isArchived: false,
+          purchaseUnit: "", // textual unit is free-form; we keep exact ml
+          purchaseMl: vPurchaseMl,
+          costPerPurchase: vCost,
+          servingUnit: s.label || "",
+          servingMl: sMl,
+          servingsPerPurchase: per,
+          costPerServing: cps,
+          sku: s.sku || "",
+          posSku: s.posSku || "",
+          familyRecipe: undefined,
+        });
       }
     }
-    return created;
-  };
+    return out;
+  }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!data.name.trim()) return alert('Family name is required');
-    if (!data.category) return alert('Category is required');
-    if (!data.variants.length) return alert('Add at least one purchase format');
-    for (const v of data.variants) {
-      if (!v.label || !v.label.trim()) return alert('Each format needs a label');
-      if (!(v.purchaseUnit && v.purchaseUnit.baseUnit && v.purchaseUnit.size > 0)) return alert('Each format needs a valid size and base unit');
-      if (!Array.isArray(v.servingOptions) || v.servingOptions.length === 0) return alert('Each format needs at least one serving option');
+  function buildProductsRecipe() {
+    const out = [];
+    const perMl = recipeCost.costPerMl || 0;
+
+    for (const s of recipeServings) {
+      const sMl = Number(s.servingMl) || coerceServingLabelToMl(s.label || "") || 0;
+      const per = sMl > 0 && batchVolumeMl > 0 ? servingsPerPurchaseExact(batchVolumeMl, sMl) : 0;
+      const cps = sMl * perMl;
+
+      out.push({
+        familyId: familyMeta.id,
+        familyName: familyMeta.name,
+        subcategory: "Batch",
+        category: category || "Batch Cocktails",
+        isSellable: true,
+        isIngredient: false,
+        isArchived: false,
+        purchaseUnit: "Batch Output",
+        purchaseMl: batchVolumeMl,
+        costPerPurchase: perMl * batchVolumeMl,
+        servingUnit: s.label || "",
+        servingMl: sMl,
+        servingsPerPurchase: per,
+        costPerServing: cps,
+        sku: s.sku || "",
+        posSku: s.posSku || "",
+        familyRecipe: {
+          batchVolumeMl,
+          batchSku: batchSku || "",
+          ingredients: recipeIngredients.map((ing) => ({
+            productId: ing.productId || null,
+            name: ing.name || "",
+            qty: ing.qty || 0,
+            unit: ing.unit,
+            fallbackCostPerUnit: ing.fallbackCostPerUnit || 0,
+          })),
+          totalCost: perMl * batchVolumeMl,
+          costPerMl: perMl,
+        },
+      });
     }
-    const created = await materialize();
-    onCreated && onCreated(created);
-    onClose && onClose();
-  };
+    return out;
+  }
 
-  if (!isOpen) return null;
+  function buildProductsIngredient() {
+    const isVolume = ingUnitKind === "ml";
+    const perUnitCost = ingCostPerUnit || 0;
+    return [
+      {
+        familyId: familyMeta.id,
+        familyName: familyMeta.name,
+        subcategory: "",
+        category: category || "Ingredient",
+        isSellable: false,
+        isIngredient: true,
+        isArchived: false,
+        purchaseUnit: ingPurchaseLabel || (isVolume ? "Bottle" : "Bag"),
+        purchaseMl: isVolume ? (ingPurchaseQtyMl || 0) : undefined,
+        costPerPurchase: Number(ingCostPerPurchase) || 0,
+        servingUnit: "",
+        servingMl: undefined,
+        servingsPerPurchase: undefined,
+        costPerServing: undefined,
+        sku: "",
+        posSku: "",
+        ingredientEconomics: { unitKind: ingUnitKind, costPerUnit: perUnitCost },
+      },
+    ];
+  }
+
+  function collectAndSubmit() {
+    let products = [];
+    if (mode === "recipe") products = buildProductsRecipe();
+    else if (mode === "ingredient") products = buildProductsIngredient();
+    else products = buildProductsFullOrSimple();
+
+    const payloadFamily = {
+      id: familyMeta.id,
+      name: familyMeta.name,
+      category: familyMeta.category,
+      notes: familyMeta.notes,
+      mode,
+    };
+
+    onSubmit?.(products, payloadFamily);
+  }
+
+  // ------- UI -------
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Header */}
+      <div
+        className="p-4 border"
+        style={{ borderColor: BRAND.colors.border, borderRadius: BRAND.radii.card, background: BRAND.colors.surface }}
+      >
+        <div className="flex flex-wrap gap-2 items-center justify-between">
+          <div className="inline-flex rounded-lg border overflow-hidden">
+            {["full", "recipe", "simple", "ingredient"].map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`px-3 py-1.5 text-sm ${mode === m ? "bg-black text-white" : ""}`}
+                onClick={() => setMode(m)}
+              >
+                {m === "full"
+                  ? "Full (Beer/Packaged)"
+                  : m === "recipe"
+                  ? "Recipe (Batch)"
+                  : m === "simple"
+                  ? "Simple (Cider/Kombucha)"
+                  : "Ingredient"}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-2">
+            <button type="button" className={`${BRAND.classes.buttonSecondary} rounded px-3 py-1.5 text-sm`} onClick={onCancel}>
+              Cancel
+            </button>
+            <button type="button" className={`${BRAND.classes.buttonPrimary} rounded px-3 py-1.5 text-sm`} onClick={collectAndSubmit}>
+              {seedFamily ? "Save Changes" : "Create"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-sm mb-1">Family name</label>
+            <input
+              className={`${BRAND.classes.input} w-full`}
+              placeholder="e.g., Batch 15, House Cider, Margarita"
+              value={familyName}
+              onChange={(e) => setFamilyName(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm mb-1">Category</label>
+            <select className={`${BRAND.classes.input} w-full`} value={category} onChange={(e) => setCategory(e.target.value)}>
+              {["", "Beer", "Cider", "Batch Cocktails", "Kitchen", "N/A", "Ingredient"].map((c) => (
+                <option key={c || "(none)"} value={c}>
+                  {c || "Choose a category…"}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm mb-1">Notes (optional)</label>
+            <input
+              className={`${BRAND.classes.input} w-full`}
+              placeholder="Any internal notes…"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {mode === "recipe" && (
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="md:col-span-2">
+              <QtyUnit
+                label="Batch volume"
+                qty={batchQty}
+                unit={batchUnit}
+                onChange={({ qty, unit }) => {
+                  setBatchQty(qty);
+                  setBatchUnit(unit);
+                }}
+                hint={<div className="text-xs mt-1" style={{ color: BRAND.colors.hint }}>
+                  = {formatVolume(batchVolumeMl || 0, { unit: "l", decimals: 2 })}
+                </div>}
+              />
+              <div className="text-xs mt-1" style={{ color: BRAND.colors.hint }}>
+                Tip: 5 gal ≈ {(5 * ML_PER_US_GAL).toFixed(0)} ml
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm mb-1">Batch SKU (optional)</label>
+              <input
+                className={`${BRAND.classes.input} w-full`}
+                placeholder="SKU for the batch container (for mapping)"
+                value={batchSku}
+                onChange={(e) => setBatchSku(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Mode panels */}
+      {mode === "recipe" ? (
+        <RecipePanel
+          productOptions={productOptions}
+          recipeIngredients={recipeIngredients}
+          setRecipeIngredients={setRecipeIngredients}
+          recipeServings={recipeServings}
+          setRecipeServings={setRecipeServings}
+          batchVolumeMl={batchVolumeMl}
+          recipeCost={recipeCost}
+        />
+      ) : mode === "ingredient" ? (
+        <IngredientPanel
+          ingUnitKind={ingUnitKind}
+          setIngUnitKind={setIngUnitKind}
+          ingPurchaseLabel={ingPurchaseLabel}
+          setIngPurchaseLabel={setIngPurchaseLabel}
+          ingQty={ingQty}
+          setIngQty={setIngQty}
+          ingQtyUnit={ingQtyUnit}
+          setIngQtyUnit={setIngQtyUnit}
+          ingCostPerPurchase={ingCostPerPurchase}
+          setIngCostPerPurchase={setIngCostPerPurchase}
+          ingCostPerUnit={ingCostPerUnit}
+        />
+      ) : (
+        <FullSimplePanel
+          mode={mode}
+          variants={variants}
+          setVariant={setVariant}
+          addVariant={addVariant}
+          removeVariant={removeVariant}
+          addServingRow={addServingRow}
+          removeServingRow={removeServingRow}
+          setServingField={setServingField}
+          addBeerPresets={addBeerPresets}
+          addCiderPresets={addCiderPresets}
+          addKombuchaPresets={addKombuchaPresets}
+          addWholesaleServingIfKeg={addWholesaleServingIfKeg}
+          bulkPasteSkus={bulkPasteSkus}
+          generateSkus={generateSkus}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Subcomponents ----------
+
+function FullSimplePanel({
+  mode, // 'full' | 'simple'
+  variants,
+  setVariant,
+  addVariant,
+  removeVariant,
+  addServingRow,
+  removeServingRow,
+  setServingField,
+  addBeerPresets,
+  addCiderPresets,
+  addKombuchaPresets,
+  addWholesaleServingIfKeg,
+  bulkPasteSkus,
+  generateSkus,
+}) {
+  const isSimple = mode === "simple";
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-4">
-      <div className="bg-white w-full max-w-6xl rounded-2xl shadow-xl overflow-hidden">
-        {/* Header */}
-        <div className="px-6 py-4 border-b flex items-center justify-between">
-          <div>
-            <h3 className="text-lg font-semibold">New Family</h3>
-            <p className="text-xs text-gray-600">Create a family with purchase formats and serving options. Toggle Recipe to compute costs from ingredients.</p>
-          </div>
-          <button onClick={onClose} className="p-2 rounded hover:bg-gray-100" aria-label="Close"><X /></button>
-        </div>
+    <div className="flex flex-col gap-4">
+      {variants.map((v, idx) => {
+        const eachMl = toMlFromQtyUnit(v.eachQty, v.eachUnit);
+        const purchaseMl = (Number(v.purchaseQty) || 0) * (eachMl || 0);
 
-        {/* Stepper */}
-        <div className="px-6 pt-4">
-          <ol className="grid grid-cols-5 gap-2">
-            {steps.map((label, i) => (
-              <li key={label} className={`flex items-center gap-2 p-2 rounded border ${i===step? 'bg-green-50 border-green-200':'bg-gray-50 border-gray-200'} text-sm`}>
-                <span className={`h-6 w-6 inline-flex items-center justify-center rounded-full text-xs font-semibold ${i<=step? 'bg-green-600 text-white':'bg-gray-300 text-gray-700'}`}>{i+1}</span>
-                <span className="truncate">{label}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          {/* STEP 1: FAMILY */}
-          {step===0 && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Family Name</label>
-                  <input className="w-full border rounded px-3 py-2" value={data.name} onChange={(e)=> setPath('name', e.target.value)} placeholder="Batch 15 / Margarita" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Category</label>
-                  <select className="w-full border rounded px-3 py-2 bg-white" value={data.category} onChange={(e)=> setPath('category', e.target.value)}>
-                    {Array.isArray(fohCategories) && fohCategories.map(c=> <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Vendor</label>
-                  <input className="w-full border rounded px-3 py-2" value={data.vendor} onChange={(e)=> setPath('vendor', e.target.value)} placeholder="Aslan / Dickerson / ..." />
-                </div>
+        return (
+          <div
+            key={v.id}
+            className="p-4 border"
+            style={{ borderColor: BRAND.colors.border, borderRadius: BRAND.radii.card, background: BRAND.colors.surface }}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-medium">
+                {isSimple ? "Format" : `Variant ${idx + 1}`}{" "}
+                <span className="text-xs" style={{ color: BRAND.colors.hint }}>
+                  (purchase & servings)
+                </span>
               </div>
+              <div className="flex gap-2">
+                {!isSimple && (
+                  <button
+                    type="button"
+                    className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+                    onClick={() => removeVariant(v.id)}
+                  >
+                    Remove
+                  </button>
+                )}
+                {isSimple && idx === variants.length - 1 && (
+                  <button
+                    type="button"
+                    className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+                    onClick={addVariant}
+                  >
+                    + Add Format
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              {/* Label */}
               <div>
-                <label className="block text-sm font-medium mb-1">Description</label>
-                <textarea className="w-full border rounded px-3 py-2" rows={3} value={data.description} onChange={(e)=> setPath('description', e.target.value)} placeholder="Notes, seasonality, etc." />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium mb-1">Name Template</label>
-                  <input className="w-full border rounded px-3 py-2" value={data.nameTemplate} onChange={(e)=> setPath('nameTemplate', e.target.value)} />
-                  <p className="text-xs text-gray-500 mt-1">Tokens: {'{family}'}, {'{variant}'}, {'{serving}'} (used for auto names)</p>
-                </div>
-                <label className="inline-flex items-center gap-2 self-end">
-                  <input type="checkbox" checked={data.hasRecipe} onChange={(e)=> setPath('hasRecipe', e.target.checked)} />
-                  <span className="text-sm">This family has a batch recipe</span>
-                </label>
+                <label className="block text-sm mb-1">{isSimple ? "Format label" : "Variant label"}</label>
+                <input
+                  className={`${BRAND.classes.input} w-full`}
+                  placeholder={isSimple ? "e.g., ½ BBL Cider" : "e.g., ½ BBL, ⅙ BBL, Case, Singles"}
+                  value={v.label}
+                  onChange={(e) => setVariant(v.id, (x) => ({ ...x, label: e.target.value }))}
+                />
               </div>
 
-              {data.hasRecipe && (
-                <div className="border rounded-xl p-4 space-y-3">
-                  <div className="font-semibold">Recipe</div>
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Batch Size</label>
-                      <input type="number" min={0} step="any" className="w-full border rounded px-3 py-2" value={data.recipe.batchSize} onChange={(e)=> setPath('recipe.batchSize', +e.target.value || 0)} />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Batch Unit</label>
-                      <select className="w-full border rounded px-3 py-2 bg-white" value={data.recipe.batchUnit} onChange={(e)=> setPath('recipe.batchUnit', e.target.value)}>
-                        {UNIT_OPTS.map(u=> <option key={u} value={u}>{u}</option>)}
-                      </select>
-                    </div>
-                    <div className="md:col-span-2 flex items-end text-sm text-gray-700">
-                      Total recipe cost: <span className="font-semibold ml-2">${recipeCalc.total.toFixed(2)}</span> {recipeCalc.batchKind==='vol' && (<span className="ml-3">(${recipeCalc.perUnit.toFixed(4)} per L)</span>)}
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-1 md:grid-cols-8 gap-2 text-xs text-gray-600">
-                      <div className="md:col-span-3">Link product (by name or SKU)</div>
-                      <div>Qty</div>
-                      <div>Unit</div>
-                      <div className="md:col-span-2">Manual cost (fallback)</div>
-                      <div>Line cost</div>
-                      <div></div>
-                    </div>
-                    {ingredientRows.map((r, idx)=>{
-                      const linked = r.linkedName ? findProductByNameOrSku(r.linkedName) : null;
-                      const fromLinked = linked ? costFromLinkedProduct(linked, +r.quantity||0, r.unit||'L') : NaN;
-                      const lineCost = isFinite(fromLinked) ? fromLinked : (+r.costHint || 0);
-                      return (
-                        <div key={idx} className="grid grid-cols-1 md:grid-cols-8 gap-2 items-end">
-                          <div className="md:col-span-3">
-                            <input list="ingredient-products" className="w-full border rounded px-3 py-2" value={r.linkedName||''} onChange={(e)=> setPath(`recipe.ingredients.${idx}.linkedName`, e.target.value)} placeholder="Tequila Blanco 1L / SKU123" />
-                          </div>
-                          <div>
-                            <input type="number" min={0} step="any" className="w-full border rounded px-3 py-2" value={r.quantity||0} onChange={(e)=> setPath(`recipe.ingredients.${idx}.quantity`, +e.target.value||0)} />
-                          </div>
-                          <div>
-                            <select className="w-full border rounded px-3 py-2 bg-white" value={r.unit||'L'} onChange={(e)=> setPath(`recipe.ingredients.${idx}.unit`, e.target.value)}>
-                              {UNIT_OPTS.map(u=> <option key={u} value={u}>{u}</option>)}
-                            </select>
-                          </div>
-                          <div className="md:col-span-2">
-                            <input type="number" min={0} step="any" className="w-full border rounded px-3 py-2" value={r.costHint||''} onChange={(e)=> setPath(`recipe.ingredients.${idx}.costHint`, +e.target.value||0)} placeholder="If not linked" />
-                          </div>
-                          <div className="text-sm text-gray-700 py-2">${(lineCost||0).toFixed(2)}</div>
-                          <div className="flex justify-end">
-                            <button type="button" onClick={()=> setPath('recipe.ingredients', ingredientRows.filter((_,i)=> i!==idx))} className="px-2 py-2 rounded border text-red-600">Remove</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <datalist id="ingredient-products">
-                      {allProducts.map(p => <option key={p.id} value={p.sku || p.name}>{p.name} {p.sku? `(${p.sku})`: ''}</option>)}
-                    </datalist>
-                    <div className="pt-1">
-                      <button type="button" onClick={()=> setPath('recipe.ingredients', [...ingredientRows, { linkedName:'', quantity:0, unit: isVol(data.recipe.batchUnit)? 'L' : isMass(data.recipe.batchUnit)? 'g' : 'each', costHint: 0 }])} className="inline-flex items-center gap-2 px-3 py-1.5 rounded border bg-gray-50 hover:bg-gray-100"><Plus className="h-4 w-4"/> Add ingredient</button>
-                    </div>
-                  </div>
+              {/* Purchase Unit Preset */}
+              <div>
+                <label className="block text-sm mb-1">Purchase Unit Preset</label>
+                <select
+                  className={`${BRAND.classes.input} w-full`}
+                  value={v.presetKey || ""}
+                  onChange={(e) => onPresetChange(v.id, e.target.value)}
+                >
+                  <option value="">Pick a preset…</option>
+                  {PURCHASE_PRESETS.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.label} ({formatVolume(p.eachMl * p.defaultQty, { unit: "l", decimals: 2 })})
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs mt-1" style={{ color: BRAND.colors.hint }}>
+                  Sets default **items per purchase** and **each size** automatically.
                 </div>
-              )}
+              </div>
+
+              {/* Purchase Quantity (items per purchase) */}
+              <div>
+                <label className="block text-sm mb-1">Purchase Quantity</label>
+                <input
+                  type="number"
+                  className={`${BRAND.classes.input} w-full`}
+                  placeholder="e.g., 24 (case) • 1 (keg)"
+                  value={Number.isFinite(v.purchaseQty) ? v.purchaseQty : ""}
+                  onChange={(e) => setVariant(v.id, (x) => ({ ...x, purchaseQty: Number(e.target.value) }))}
+                />
+                <div className="text-xs mt-1" style={{ color: BRAND.colors.hint }}>
+                  Items per purchase container (e.g., case=24 cans; keg=1).
+                </div>
+              </div>
+
+              {/* Each Size (qty+unit) */}
+              <div>
+                <QtyUnit
+                  label="Each size"
+                  qty={Number.isFinite(v.eachQty) ? v.eachQty : ""}
+                  unit={v.eachUnit || "ml"}
+                  onChange={({ qty, unit }) => setVariant(v.id, (x) => ({ ...x, eachQty: qty, eachUnit: unit }))}
+                  hint={
+                    <div className="text-xs mt-1" style={{ color: BRAND.colors.hint }}>
+                      = {formatVolume(eachMl || 0, { unit: "l", decimals: 2 })}
+                    </div>
+                  }
+                />
+              </div>
+
+              {/* Cost per purchase */}
+              <div>
+                <label className="block text-sm mb-1">Cost per purchase ($)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  className={`${BRAND.classes.input} w-full`}
+                  placeholder="e.g., 189.00"
+                  value={Number.isFinite(v.costPerPurchase) ? v.costPerPurchase : ""}
+                  onChange={(e) => setVariant(v.id, (x) => ({ ...x, costPerPurchase: Number(e.target.value) }))}
+                />
+              </div>
+
+              {/* Purchase total ml hint */}
+              <div className="md:col-span-3">
+                <div className="text-sm mt-7">
+                  Purchase volume (computed): <strong>{formatVolume(purchaseMl || 0, { unit: "l", decimals: 2 })}</strong>
+                </div>
+              </div>
             </div>
-          )}
 
-          {/* STEP 2: FORMATS */}
-          {step===1 && (
-            <div className="space-y-4">
+            {/* Servings */}
+            <div className="mt-4">
               <div className="flex items-center justify-between">
-                <h4 className="font-semibold">{data.hasRecipe ? 'Batch output (containers)' : 'Purchase formats'}</h4>
-                <button type="button" onClick={addVariant} className="inline-flex items-center gap-2 px-3 py-1.5 rounded border bg-gray-50 hover:bg-gray-100"><Plus className="h-4 w-4"/> Add {data.hasRecipe ? 'output' : 'format'}</button>
-              </div>
-              {(data.variants||[]).map((v, vidx)=> (
-                <div key={vidx} className="border rounded-xl p-4 space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Label</label>
-                      <input className="w-full border rounded px-3 py-2" value={v.label} onChange={(e)=> setPath(`variants.${vidx}.label`, e.target.value)} placeholder={data.hasRecipe ? '5 gal corny' : '1/2 BBL / 1/6 BBL / Case 24'} />
-                    </div>
-                    {!data.hasRecipe && (
-                      <div>
-                        <label className="block text-sm font-medium mb-1">Cost per purchase ($)</label>
-                        <input type="number" min={0} step="any" className="w-full border rounded px-3 py-2" value={v.costPerPurchase || 0} onChange={(e)=> setPath(`variants.${vidx}.costPerPurchase`, +e.target.value || 0)} />
-                      </div>
-                    )}
-                    <div>
-                      <label className="block text-sm font-medium mb-1">{data.hasRecipe ? 'Output size' : 'Purchase size'}</label>
-                      <input type="number" min={0} step="any" className="w-full border rounded px-3 py-2" value={v.purchaseUnit?.size || 0} onChange={(e)=> setPath(`variants.${vidx}.purchaseUnit.size`, +e.target.value || 0)} />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Base unit</label>
-                      <select className="w-full border rounded px-3 py-2 bg-white" value={v.purchaseUnit?.baseUnit || (isVol(data.recipe.batchUnit)? 'L' : isMass(data.recipe.batchUnit)? 'g' : 'each')} onChange={(e)=> setPath(`variants.${vidx}.purchaseUnit.baseUnit`, e.target.value)}>
-                        {UNIT_OPTS.map(u=> <option key={u} value={u}>{u}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Unit name</label>
-                      <input className="w-full border rounded px-3 py-2" value={v.purchaseUnit?.name || (data.hasRecipe ? 'batch' : '')} onChange={(e)=> setPath(`variants.${vidx}.purchaseUnit.name`, e.target.value)} placeholder={data.hasRecipe ? 'batch / corny / keg' : 'keg / flat / case'} />
-                    </div>
-                    <div className="flex items-end justify-between">
-                      {data.hasRecipe ? (
-                        <div className="text-xs text-gray-600">Cost computed from recipe</div>
-                      ) : (
-                        <div />
-                      )}
-                      <button type="button" onClick={()=> removeVariant(vidx)} className="px-3 py-2 rounded border text-red-600">Remove</button>
-                    </div>
-                  </div>
-                  {data.hasRecipe && (
-                    <div className="text-sm text-gray-700">
-                      {/* show computed cost for this output */}
-                      {(() => {
-                        const pu = v.purchaseUnit || {};
-                        let computed = 0;
-                        if (recipeCalc.batchKind==='vol' && isVol(pu.baseUnit)) computed = recipeCalc.perUnit * (toLiters(pu.size||0, pu.baseUnit)||0);
-                        else if (recipeCalc.batchKind==='mass' && isMass(pu.baseUnit)) computed = recipeCalc.perUnit * (toGrams(pu.size||0, pu.baseUnit)||0);
-                        else if (recipeCalc.batchKind==='each' && isEach(pu.baseUnit)) computed = recipeCalc.perUnit * (pu.size||1);
-                        return <div>Computed cost for this output: <span className="font-semibold">${(computed||0).toFixed(2)}</span></div>;
-                      })()}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {(!data.variants || data.variants.length===0) && (
-                <div className="text-sm text-gray-600">No {data.hasRecipe ? 'outputs' : 'formats'} yet. Add one above.</div>
-              )}
-            </div>
-          )}
+                <div className="font-medium">Servings</div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+                    onClick={() => addServingRow(v.id, "")}
+                  >
+                    + Add Serving
+                  </button>
 
-          {/* STEP 3: SERVINGS */}
-          {step===2 && (
-            <div className="space-y-6">
-              {(data.variants||[]).map((v, vidx)=> (
-                <div key={vidx} className="border rounded-xl p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="font-semibold">{v.label}</div>
-                    <button type="button" onClick={()=> beerPresets(vidx)} className="inline-flex items-center gap-2 px-2 py-1 rounded border bg-gray-50 hover:bg-gray-100"><Wand2 className="h-4 w-4"/> Beer presets</button>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-1 md:grid-cols-8 gap-2 text-xs text-gray-600">
-                      <div className="md:col-span-2">Serving name</div>
-                      <div>Size</div>
-                      <div>Unit</div>
-                      <div>Yield loss %</div>
-                      <div>Servings/purchase</div>
-                      <div>Cost/serving</div>
-                      <div></div>
-                    </div>
-                    {(v.servingOptions||[]).map((s, sidx)=>{
-                      const sp = Math.floor(servingsPerPurchase(v.purchaseUnit, s));
-                      const pu = v.purchaseUnit||{};
-                      let variantCost = v.costPerPurchase||0;
-                      if (data.hasRecipe){
-                        if (recipeCalc.batchKind==='vol' && isVol(pu.baseUnit)) variantCost = recipeCalc.perUnit * (toLiters(pu.size||0, pu.baseUnit)||0);
-                        else if (recipeCalc.batchKind==='mass' && isMass(pu.baseUnit)) variantCost = recipeCalc.perUnit * (toGrams(pu.size||0, pu.baseUnit)||0);
-                        else if (recipeCalc.batchKind==='each' && isEach(pu.baseUnit)) variantCost = recipeCalc.perUnit * (pu.size||1);
-                      }
-                      const cps = costPerServing(variantCost, sp);
-                      return (
-                        <div key={sidx} className="grid grid-cols-1 md:grid-cols-8 gap-2 items-end">
-                          <div className="md:col-span-2">
-                            <input className="w-full border rounded px-3 py-2" value={s.label || ''} onChange={(e)=> setPath(`variants.${vidx}.servingOptions.${sidx}.label`, e.target.value)} placeholder="0.5L Pour / 4oz / Whole Keg" />
-                          </div>
-                          <div>
-                            <input type="number" min={0} step="any" className="w-full border rounded px-3 py-2" value={s.size || 0} onChange={(e)=> setPath(`variants.${vidx}.servingOptions.${sidx}.size`, +e.target.value || 0)} />
-                          </div>
-                          <div>
-                            <select className="w-full border rounded px-3 py-2 bg-white" value={s.baseUnit || v.purchaseUnit.baseUnit} onChange={(e)=> setPath(`variants.${vidx}.servingOptions.${sidx}.baseUnit`, e.target.value)}>
-                              {UNIT_OPTS.map(u=> <option key={u} value={u}>{u}</option>)}
-                            </select>
-                          </div>
-                          <div>
-                            <input type="number" min={0} max={100} className="w-full border rounded px-3 py-2" value={s.yieldLossPct || 0} onChange={(e)=> setPath(`variants.${vidx}.servingOptions.${sidx}.yieldLossPct`, +e.target.value || 0)} />
-                          </div>
-                          <div className="text-sm text-gray-700 py-2">{sp}</div>
-                          <div className="text-sm text-gray-700 py-2">${cps.toFixed(4)}</div>
-                          <div className="flex justify-end">
-                            <button type="button" onClick={()=> removeServing(vidx, sidx)} className="px-2 py-2 rounded border text-red-600">Remove</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <div className="pt-1">
-                      <button type="button" onClick={()=> addServing(vidx)} className="inline-flex items-center gap-2 px-3 py-1.5 rounded border bg-gray-50 hover:bg-gray-100"><Plus className="h-4 w-4"/> Add serving</button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {(!data.variants || data.variants.length===0) && (
-                <div className="text-sm text-gray-600">No {data.hasRecipe ? 'outputs' : 'formats'} defined yet. Go back and add at least one.</div>
-              )}
-            </div>
-          )}
+                  {/* Category presets */}
+                  <button
+                    type="button"
+                    className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+                    onClick={() => addBeerPresets(v.id)}
+                  >
+                    Beer Presets
+                  </button>
+                  <button
+                    type="button"
+                    className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+                    onClick={() => addCiderPresets(v.id)}
+                  >
+                    Cider Presets
+                  </button>
+                  <button
+                    type="button"
+                    className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+                    onClick={() => addKombuchaPresets(v.id)}
+                  >
+                    Kombucha Presets
+                  </button>
 
-          {/* STEP 4: SKUs GRID */}
-          {step===3 && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-700">Fill SKUs for each serving. You can paste from Toast or click Generate All.</div>
-                <button type="button" onClick={genAllSkus} className="px-3 py-1.5 rounded border">Generate all (missing only)</button>
+                  {/* Conditional wholesale for ½ / ⅙ kegs */}
+                  {(() => {
+                    const maybe = addWholesaleServingIfKeg(v);
+                    return maybe ? (
+                      <button
+                        type="button"
+                        className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+                        onClick={() => {
+                          addServingRow(v.id, maybe.label);
+                          setServingField(v.id, v.servings[v.servings.length]?.id, "servingMl", maybe.ml);
+                        }}
+                        title="Sell whole keg as a single item"
+                      >
+                        Add {maybe.label}
+                      </button>
+                    ) : null;
+                  })()}
+                </div>
               </div>
-              <div className="border rounded-xl overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50">
+
+              <div className="mt-2 overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className={BRAND.classes.tableHead}>
                     <tr>
-                      <th className="px-3 py-2 text-left">Variant</th>
-                      <th className="px-3 py-2 text-left">Serving</th>
-                      <th className="px-3 py-2 text-left">Size</th>
-                      <th className="px-3 py-2 text-left">Unit</th>
-                      <th className="px-3 py-2 text-left">SKU</th>
-                      <th className="px-3 py-2 text-left">POS SKU (Toast)</th>
-                      <th className="px-3 py-2"></th>
+                      <th className="px-2 py-2 text-left">Serving</th>
+                      <th className="px-2 py-2 text-left">Serving (ml)</th>
+                      <th className="px-2 py-2 text-right">Servings / Purchase</th>
+                      <th className="px-2 py-2 text-right">Cost / Serving</th>
+                      <th className="px-2 py-2 text-left">SKU</th>
+                      <th className="px-2 py-2 text-left">POS SKU</th>
+                      <th className="px-2 py-2 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {skuRows.length===0 && (
-                      <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-500">No servings yet. Add servings in the previous step.</td></tr>
+                    {v.servings.map((s) => {
+                      const sMl = Number(s.servingMl) || coerceServingLabelToMl(s.label || "") || 0;
+                      const per =
+                        sMl > 0 && (v.purchaseMl || 0) > 0
+                          ? servingsPerPurchasePourable(v.purchaseMl, sMl)
+                          : 0;
+                      const cps = per > 0 && Number(v.costPerPurchase) > 0 ? v.costPerPurchase / per : 0;
+
+                      return (
+                        <tr key={s.id} className="border-t">
+                          <td className="px-2 py-2 align-top">
+                            <input
+                              className={`${BRAND.classes.input} w-48`}
+                              placeholder='e.g., .5L, 12oz, "Taster (2oz)", "Pitcher (64oz)"'
+                              value={s.label}
+                              onChange={(e) => {
+                                const label = e.target.value;
+                                const ml = coerceServingLabelToMl(label);
+                                setServingField(v.id, s.id, "label", label);
+                                if (ml) setServingField(v.id, s.id, "servingMl", ml);
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-2 align-top">
+                            <input
+                              type="number"
+                              className={`${BRAND.classes.input} w-32`}
+                              placeholder="(ml)"
+                              value={Number.isFinite(s.servingMl) ? s.servingMl : ""}
+                              onChange={(e) => setServingField(v.id, s.id, "servingMl", Number(e.target.value))}
+                            />
+                          </td>
+                          <td className="px-2 py-2 text-right align-top">{per ? per.toFixed(2) : "—"}</td>
+                          <td className="px-2 py-2 text-right align-top">{cps ? `$${cps.toFixed(4)}` : "—"}</td>
+                          <td className="px-2 py-2 align-top">
+                            <input
+                              className={`${BRAND.classes.input} w-44`}
+                              placeholder="SKU"
+                              value={s.sku || ""}
+                              onChange={(e) => setServingField(v.id, s.id, "sku", e.target.value)}
+                            />
+                          </td>
+                          <td className="px-2 py-2 align-top">
+                            <input
+                              className={`${BRAND.classes.input} w-44`}
+                              placeholder="POS SKU (optional)"
+                              value={s.posSku || ""}
+                              onChange={(e) => setServingField(v.id, s.id, "posSku", e.target.value)}
+                            />
+                          </td>
+                          <td className="px-2 py-2 text-right align-top">
+                            <button
+                              type="button"
+                              className={`${BRAND.classes.buttonSecondary} rounded px-2 py-0.5 text-xs`}
+                              onClick={() => removeServingRow(v.id, s.id)}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {!v.servings.length && (
+                      <tr>
+                        <td className="px-2 py-4 text-sm" colSpan={7} style={{ color: BRAND.colors.hint }}>
+                          No servings yet. Use **Beer/Cider/Kombucha Presets** or add a custom serving.
+                        </td>
+                      </tr>
                     )}
-                    {skuRows.map((r)=> (
-                      <tr key={r.key} className="border-t">
-                        <td className="px-3 py-2 whitespace-nowrap">{r.variant}</td>
-                        <td className="px-3 py-2"><input className="w-full border rounded px-2 py-1" value={r.serving} onChange={(e)=> r.setServing(e.target.value)} /></td>
-                        <td className="px-3 py-2 w-28">{r.size}</td>
-                        <td className="px-3 py-2 w-24">{r.baseUnit}</td>
-                        <td className="px-3 py-2"><input className="w-full border rounded px-2 py-1" value={r.sku} onChange={(e)=> r.setSku(e.target.value)} placeholder="Paste or generate" /></td>
-                        <td className="px-3 py-2"><input className="w-full border rounded px-2 py-1" value={r.posSku} onChange={(e)=> r.setPosSku(e.target.value)} placeholder="Optional" /></td>
-                        <td className="px-3 py-2"><button type="button" onClick={()=> r.setSku(r.suggest())} className="px-2 py-1 rounded border">Gen</button></td>
-                      </tr>
-                    ))}
                   </tbody>
                 </table>
               </div>
-            </div>
-          )}
 
-          {/* STEP 5: REVIEW */}
-          {step===4 && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="border rounded-xl p-3">
-                  <div className="text-xs text-gray-500">Family</div>
-                  <div className="font-medium">{data.name || '(unnamed)'}</div>
-                  <div className="text-sm text-gray-600">{data.category} {data.vendor ? ' • ' + data.vendor : ''}</div>
-                </div>
-                <div className="border rounded-xl p-3">
-                  <div className="text-xs text-gray-500">Totals</div>
-                  <div className="text-sm">Products: {reviewStats.totalProducts}</div>
-                  {data.hasRecipe && <div className="text-sm">Recipe cost total: ${recipeCalc.total.toFixed(2)}</div>}
-                </div>
-                <div className="border rounded-xl p-3">
-                  <div className="text-xs text-gray-500">Recipe</div>
-                  <div className="text-sm">{data.hasRecipe? 'Included' : 'None'}</div>
+              {/* SKU tools */}
+              <div className="mt-3 flex flex-col gap-2">
+                <div className="text-sm font-medium">SKU tools</div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <button
+                    type="button"
+                    className={`${BRAND.classes.buttonSecondary} rounded px-3 py-1.5 text-sm`}
+                    onClick={() => generateSkus(v.id)}
+                    title="Generate SKUs for blank rows"
+                  >
+                    Generate All
+                  </button>
+                  <BulkSkuPaste onPaste={(text) => bulkPasteSkus(v.id, text)} />
                 </div>
               </div>
-              <div className="border rounded-xl overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Variant</th>
-                      <th className="px-3 py-2 text-left">Serving</th>
-                      <th className="px-3 py-2 text-left">SKU</th>
-                      <th className="px-3 py-2 text-left">POS SKU</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {skuRows.map(r=> (
-                      <tr key={r.key} className="border-t">
-                        <td className="px-3 py-2">{r.variant}</td>
-                        <td className="px-3 py-2">{r.serving}</td>
-                        <td className="px-3 py-2">{r.sku || '-'}</td>
-                        <td className="px-3 py-2">{r.posSku || '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Footer nav */}
-          <div className="flex items-center justify-between pt-2">
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={prev} disabled={step===0} className="inline-flex items-center gap-2 px-3 py-2 rounded border disabled:opacity-50"><ChevronLeft className="h-4 w-4"/> Back</button>
-              <button type="button" onClick={next} disabled={step===steps.length-1} className="inline-flex items-center gap-2 px-3 py-2 rounded border disabled:opacity-50">Next <ChevronRight className="h-4 w-4"/></button>
-            </div>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={onClose} className="px-3 py-2 rounded border">Cancel</button>
-              <button type="submit" disabled={step!==steps.length-1} className="inline-flex items-center gap-2 px-4 py-2 rounded bg-green-700 text-white disabled:opacity-50"><Save className="h-4 w-4"/> Create Products</button>
             </div>
           </div>
-        </form>
+        );
+      })}
+
+      {!isSimple && (
+        <div className="flex justify-end">
+          <button type="button" className={`${BRAND.classes.buttonSecondary} rounded px-3 py-1.5 text-sm`} onClick={addVariant}>
+            + Add Variant
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BulkSkuPaste({ onPaste }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  return (
+    <div>
+      {!open ? (
+        <button
+          type="button"
+          className={`${BRAND.classes.buttonSecondary} rounded px-3 py-1.5 text-sm`}
+          onClick={() => setOpen(true)}
+          title='Paste "Serving,SKU[,POS]" (comma or tab separated)'
+        >
+          Bulk Paste…
+        </button>
+      ) : (
+        <div className="mt-2 grid gap-2">
+          <textarea
+            className={`${BRAND.classes.input} w-[560px] h-28`}
+            placeholder={`Example:\n.5L,SKU-001\n"Pitcher (64oz)",SKU-064\n"Taster (2oz)"\tSKU-T2OZ\tPOS-T2`}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={`${BRAND.classes.buttonPrimary} rounded px-3 py-1.5 text-sm`}
+              onClick={() => {
+                onPaste?.(text);
+                setOpen(false);
+                setText("");
+              }}
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              className={`${BRAND.classes.buttonSecondary} rounded px-3 py-1.5 text-sm`}
+              onClick={() => {
+                setOpen(false);
+                setText("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecipePanel({
+  productOptions,
+  recipeIngredients,
+  setRecipeIngredients,
+  recipeServings,
+  setRecipeServings,
+  batchVolumeMl,
+  recipeCost,
+}) {
+  const addIngredient = () =>
+    setRecipeIngredients((r) => [
+      ...r,
+      { id: `ing_${Math.random().toString(36).slice(2, 7)}`, productId: "", name: "", qty: 0, unit: "ml", fallbackCostPerUnit: 0 },
+    ]);
+  const removeIngredient = (id) => setRecipeIngredients((r) => r.filter((x) => x.id !== id));
+  const setIngredientField = (id, field, value) =>
+    setRecipeIngredients((r) => r.map((x) => (x.id === id ? { ...x, [field]: value } : x)));
+
+  const addRecipeServing = (label = "6oz") =>
+    setRecipeServings((s) => [
+      ...s,
+      { id: `rs_${Math.random().toString(36).slice(2, 7)}`, label, servingMl: coerceServingLabelToMl(label) || 0, sku: "", posSku: "" },
+    ]);
+  const removeRecipeServing = (sid) => setRecipeServings((s) => s.filter((x) => x.id !== sid));
+  const setRecipeServingField = (sid, field, value) =>
+    setRecipeServings((s) => s.map((x) => (x.id === sid ? { ...x, [field]: value } : x)));
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div
+        className="p-4 border"
+        style={{ borderColor: BRAND.colors.border, borderRadius: BRAND.radii.card, background: BRAND.colors.surface }}
+      >
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="md:col-span-3">
+            <label className="block text-sm mb-1">Ingredients</label>
+            <div className="rounded border overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className={BRAND.classes.tableHead}>
+                  <tr>
+                    <th className="px-2 py-2 text-left">Link product (optional)</th>
+                    <th className="px-2 py-2 text-left">Name (fallback)</th>
+                    <th className="px-2 py-2 text-right">Qty</th>
+                    <th className="px-2 py-2 text-left">Unit</th>
+                    <th className="px-2 py-2 text-right">Fallback $/unit</th>
+                    <th className="px-2 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recipeIngredients.map((ing) => (
+                    <tr key={ing.id} className="border-t">
+                      <td className="px-2 py-2">
+                        <select
+                          className={`${BRAND.classes.input} w-64`}
+                          value={ing.productId || ""}
+                          onChange={(e) => setIngredientField(ing.id, "productId", e.target.value)}
+                        >
+                          <option value="">—</option>
+                          {productOptions.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} {p.sku ? `(${p.sku})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          className={`${BRAND.classes.input} w-56`}
+                          placeholder="e.g., Tequila, Lime juice, Agave"
+                          value={ing.name}
+                          onChange={(e) => setIngredientField(ing.id, "name", e.target.value)}
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          type="number"
+                          className={`${BRAND.classes.input} w-28 text-right`}
+                          placeholder="e.g., 8400"
+                          value={Number.isFinite(ing.qty) ? ing.qty : ""}
+                          onChange={(e) => setIngredientField(ing.id, "qty", Number(e.target.value))}
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <select
+                          className={`${BRAND.classes.input} w-28`}
+                          value={ing.unit}
+                          onChange={(e) => setIngredientField(ing.id, "unit", e.target.value)}
+                        >
+                          <option value="ml">ml</option>
+                          <option value="g">g</option>
+                        </select>
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.0001"
+                          className={`${BRAND.classes.input} w-28 text-right`}
+                          placeholder="e.g., 0.0025"
+                          value={Number.isFinite(ing.fallbackCostPerUnit) ? ing.fallbackCostPerUnit : ""}
+                          onChange={(e) => setIngredientField(ing.id, "fallbackCostPerUnit", Number(e.target.value))}
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <button
+                          type="button"
+                          className={`${BRAND.classes.buttonSecondary} rounded px-2 py-0.5 text-xs`}
+                          onClick={() => removeIngredient(ing.id)}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {!recipeIngredients.length && (
+                    <tr>
+                      <td className="px-2 py-4 text-sm" colSpan={6} style={{ color: BRAND.colors.hint }}>
+                        No ingredients yet. Add spirits, juices, syrups… link products to auto-pull costs; fallback $/unit if needed.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-2">
+              <button type="button" className={`${BRAND.classes.buttonSecondary} rounded px-3 py-1.5 text-sm`} onClick={addIngredient}>
+                + Add Ingredient
+              </button>
+            </div>
+
+            <div className="text-sm mt-3">
+              Batch cost: <strong>${(recipeCost.totalCost || 0).toFixed(2)}</strong> • Cost/ml:{" "}
+              <strong>${(recipeCost.costPerMl || 0).toFixed(4)}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Outputs */}
+      <div
+        className="p-4 border"
+        style={{ borderColor: BRAND.colors.border, borderRadius: BRAND.radii.card, background: BRAND.colors.surface }}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-medium">Output servings</div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+              onClick={() => {
+                ["6oz"].forEach((p) =>
+                  setRecipeServings((s) => [
+                    ...s,
+                    { id: `rs_${Math.random().toString(36).slice(2, 7)}`, label: p, servingMl: coerceServingLabelToMl(p) || 0, sku: "", posSku: "" },
+                  ])
+                );
+              }}
+            >
+              + Add 6oz
+            </button>
+            <button
+              type="button"
+              className={`${BRAND.classes.buttonSecondary} rounded px-2 py-1 text-xs`}
+              onClick={() =>
+                ["8oz", "10oz"].forEach((p) =>
+                  setRecipeServings((s) => [
+                    ...s,
+                    { id: `rs_${Math.random().toString(36).slice(2, 7)}`, label: p, servingMl: coerceServingLabelToMl(p) || 0, sku: "", posSku: "" },
+                  ])
+                )
+              }
+            >
+              Add 8oz & 10oz
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className={BRAND.classes.tableHead}>
+              <tr>
+                <th className="px-2 py-2 text-left">Serving</th>
+                <th className="px-2 py-2 text-left">Serving (ml)</th>
+                <th className="px-2 py-2 text-right">Servings / Batch</th>
+                <th className="px-2 py-2 text-left">SKU</th>
+                <th className="px-2 py-2 text-left">POS SKU</th>
+                <th className="px-2 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recipeServings.map((s) => {
+                const sMl = Number(s.servingMl) || coerceServingLabelToMl(s.label || "") || 0;
+                const per = sMl > 0 && batchVolumeMl > 0 ? servingsPerPurchaseExact(batchVolumeMl, sMl) : 0;
+                return (
+                  <tr key={s.id} className="border-t">
+                    <td className="px-2 py-2">
+                      <input
+                        className={`${BRAND.classes.input} w-44`}
+                        placeholder="e.g., 6oz"
+                        value={s.label}
+                        onChange={(e) => {
+                          const label = e.target.value;
+                          const ml = coerceServingLabelToMl(label);
+                          setRecipeServings((rows) =>
+                            rows.map((row) => (row.id === s.id ? { ...row, label, servingMl: ml || row.servingMl } : row))
+                          );
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        type="number"
+                        className={`${BRAND.classes.input} w-32`}
+                        placeholder="(ml)"
+                        value={Number.isFinite(s.servingMl) ? s.servingMl : ""}
+                        onChange={(e) =>
+                          setRecipeServings((rows) => rows.map((row) => (row.id === s.id ? { ...row, servingMl: Number(e.target.value) } : row)))
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-right">{per ? per.toFixed(2) : "—"}</td>
+                    <td className="px-2 py-2">
+                      <input
+                        className={`${BRAND.classes.input} w-44`}
+                        placeholder="SKU"
+                        value={s.sku || ""}
+                        onChange={(e) =>
+                          setRecipeServings((rows) => rows.map((row) => (row.id === s.id ? { ...row, sku: e.target.value } : row)))
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        className={`${BRAND.classes.input} w-44`}
+                        placeholder="POS SKU (optional)"
+                        value={s.posSku || ""}
+                        onChange={(e) =>
+                          setRecipeServings((rows) => rows.map((row) => (row.id === s.id ? { ...row, posSku: e.target.value } : row)))
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <button
+                        type="button"
+                        className={`${BRAND.classes.buttonSecondary} rounded px-2 py-0.5 text-xs`}
+                        onClick={() => removeRecipeServing(s.id)}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!recipeServings.length && (
+                <tr>
+                  <td className="px-2 py-4 text-sm" colSpan={6} style={{ color: BRAND.colors.hint }}>
+                    Add at least one serving size (e.g., 6oz) to create sellable SKUs.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="text-xs mt-2" style={{ color: BRAND.colors.hint }}>
+          Cost/serving shows in the product table (computed from batch). We can surface it live here later if you want.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IngredientPanel({
+  ingUnitKind,
+  setIngUnitKind,
+  ingPurchaseLabel,
+  setIngPurchaseLabel,
+  ingQty,
+  setIngQty,
+  ingQtyUnit,
+  setIngQtyUnit,
+  ingCostPerPurchase,
+  setIngCostPerPurchase,
+  ingCostPerUnit,
+}) {
+  const qtyMl = toMlFromQtyUnit(ingQty, ingQtyUnit);
+  const hint = ingUnitKind === "ml" ? (
+    <div className="text-xs mt-1" style={{ color: BRAND.colors.hint }}>
+      = {formatVolume(qtyMl || 0, { unit: "l", decimals: 2 })}
+    </div>
+  ) : null;
+
+  return (
+    <div
+      className="p-4 border"
+      style={{ borderColor: BRAND.colors.border, borderRadius: BRAND.radii.card, background: BRAND.colors.surface }}
+    >
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="md:col-span-2">
+          <label className="block text-sm mb-1">Purchase label</label>
+          <input
+            className={`${BRAND.classes.input} w-full`}
+            placeholder='e.g., "1L bottle", "10 lb bag", "Case (12 × 1L)"'
+            value={ingPurchaseLabel}
+            onChange={(e) => setIngPurchaseLabel(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm mb-1">Ingredient unit kind</label>
+          <select className={`${BRAND.classes.input} w-full`} value={ingUnitKind} onChange={(e) => setIngUnitKind(e.target.value)}>
+            <option value="ml">ml (volume)</option>
+            <option value="g">g (weight)</option>
+          </select>
+        </div>
+
+        <div className="md:col-span-2">
+          <QtyUnit
+            label={ingUnitKind === "ml" ? "Purchase size (volume)" : "Purchase size (weight)"}
+            qty={ingQty}
+            unit={ingQtyUnit}
+            onChange={({ qty, unit }) => {
+              setIngQty(qty);
+              setIngQtyUnit(unit);
+            }}
+            hint={hint}
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm mb-1">Cost per purchase ($)</label>
+          <input
+            type="number"
+            step="0.01"
+            className={`${BRAND.classes.input} w-full`}
+            placeholder="e.g., 23.50"
+            value={Number.isFinite(ingCostPerPurchase) ? ingCostPerPurchase : ""}
+            onChange={(e) => setIngCostPerPurchase(Number(e.target.value))}
+          />
+        </div>
+
+        <div className="md:col-span-3">
+          <div className="text-sm mt-7">
+            Computed unit cost: <strong>{ingCostPerUnit ? `$${ingCostPerUnit.toFixed(4)} / ${ingUnitKind}` : "—"}</strong>
+          </div>
+          <div className="text-xs mt-1" style={{ color: BRAND.colors.hint }}>
+            Recipes linked to this ingredient will use this unit cost automatically.
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 text-xs" style={{ color: BRAND.colors.hint }}>
+        Ingredient products are <strong>non-sellable</strong> and <strong>hidden</strong> by default. Use them in recipes.
       </div>
     </div>
   );
