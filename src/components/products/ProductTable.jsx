@@ -1,12 +1,13 @@
-// src/components/products/ProductTable.jsx - Clean implementation
+// src/components/products/ProductTable.jsx
 import React, { useState } from 'react';
-import { Edit2, Trash2, Eye, EyeOff, ChevronUp, ChevronDown, Package, Beaker } from 'lucide-react';
+import { Edit2, Trash2, Eye, EyeOff, ChevronUp, ChevronDown, Package, DollarSign, Calculator } from 'lucide-react';
 import { fohCategories } from '../../data/categories';
 
-const ProductTable = ({ products, onEdit, onDelete, onToggleActive, showRecipeBadges = false }) => {
+const ProductTable = ({ products, onEdit, onDelete, onToggleActive }) => {
   const [sortField, setSortField] = useState('name');
   const [sortDirection, setSortDirection] = useState('asc');
   const [viewMode, setViewMode] = useState('compact'); // 'compact' or 'full'
+  const [expandedProducts, setExpandedProducts] = useState(new Set());
 
   const handleSort = (field) => {
     if (sortField === field) {
@@ -17,18 +18,31 @@ const ProductTable = ({ products, onEdit, onDelete, onToggleActive, showRecipeBa
     }
   };
 
+  const toggleProductExpansion = (productId) => {
+    const newExpanded = new Set(expandedProducts);
+    if (newExpanded.has(productId)) {
+      newExpanded.delete(productId);
+    } else {
+      newExpanded.add(productId);
+    }
+    setExpandedProducts(newExpanded);
+  };
+
   const sortedProducts = [...products].sort((a, b) => {
     let aValue = a[sortField] || '';
     let bValue = b[sortField] || '';
 
-    // Handle numeric fields
-    if (['costPerUnit', 'costPerServing', 'suggestedPrice', 'servingsPerUnit', 'targetMargin'].includes(sortField)) {
-      aValue = parseFloat(aValue) || 0;
-      bValue = parseFloat(bValue) || 0;
-    }
-
-    // Handle string fields
-    if (typeof aValue === 'string') {
+    // Handle nested fields for new structure
+    if (sortField === 'costPerUnit') {
+      aValue = parseFloat(a.purchaseInfo?.costPerUnit || a.costPerUnit || 0);
+      bValue = parseFloat(b.purchaseInfo?.costPerUnit || b.costPerUnit || 0);
+    } else if (['costPerServing', 'suggestedPrice', 'targetMargin'].includes(sortField)) {
+      // Use first serving option for sorting
+      const aFirstServing = a.servingOptions?.[0] || {};
+      const bFirstServing = b.servingOptions?.[0] || {};
+      aValue = parseFloat(aFirstServing[sortField] || a[sortField] || 0);
+      bValue = parseFloat(bFirstServing[sortField] || b[sortField] || 0);
+    } else if (typeof aValue === 'string') {
       aValue = aValue.toLowerCase();
       bValue = bValue.toLowerCase();
     }
@@ -64,6 +78,15 @@ const ProductTable = ({ products, onEdit, onDelete, onToggleActive, showRecipeBa
     return fohCategories[categoryKey]?.name || categoryKey;
   };
 
+  const getProductTypeLabel = (productType) => {
+    const types = {
+      'purchased': '🛒 Purchased',
+      'manufactured': '🏭 Manufactured',
+      'recipe-based': '🧪 Recipe-Based'
+    };
+    return types[productType] || '🛒 Purchased';
+  };
+
   const formatCurrency = (value) => {
     const num = parseFloat(value) || 0;
     return `$${num.toFixed(2)}`;
@@ -74,28 +97,19 @@ const ProductTable = ({ products, onEdit, onDelete, onToggleActive, showRecipeBa
     return num.toFixed(decimals);
   };
 
-  const getProductTypeBadge = (product) => {
-    if (product.isRecipeBased || product.category === 'batchCocktails') {
-      return (
-        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
-          <Beaker className="h-3 w-3 mr-1" />
-          Recipe
-        </span>
-      );
-    } else if (product.productType === 'ingredient') {
-      return (
-        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-          🧪 Ingredient
-        </span>
-      );
-    } else if (product.multipleServings && product.multipleServings.length > 1) {
-      return (
-        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-          🍺 Multi-Serve
-        </span>
-      );
+  // Get primary serving option for display (first one or most common)
+  const getPrimaryServing = (product) => {
+    if (!product.servingOptions || product.servingOptions.length === 0) {
+      // Fallback for old data structure
+      return {
+        costPerServing: product.costPerServing || 0,
+        price: product.suggestedPrice || 0,
+        margin: product.targetMargin || 0,
+        servingSize: product.servingSize || 0,
+        servingUnit: product.servingUnit || 'oz'
+      };
     }
-    return null;
+    return product.servingOptions[0];
   };
 
   if (products.length === 0) {
@@ -150,213 +164,313 @@ const ProductTable = ({ products, onEdit, onDelete, onToggleActive, showRecipeBa
       </div>
 
       {/* Table Container */}
-      <div className="relative overflow-x-auto">
-        <table className={`divide-y divide-gray-200 ${
-          viewMode === 'full' ? 'min-w-full w-max' : 'w-full'
-        }`}>
-          <thead className="bg-gray-50">
-            <tr>
-              <SortHeader field="name">Product</SortHeader>
-              <SortHeader field="category">Category</SortHeader>
-              {viewMode === 'full' && <SortHeader field="sku">SKU</SortHeader>}
-              {viewMode === 'full' && <SortHeader field="supplier">Supplier</SortHeader>}
-              <SortHeader field="costPerUnit">Cost/Unit</SortHeader>
-              <SortHeader field="costPerServing">Cost/Serving</SortHeader>
-              {viewMode === 'full' && <SortHeader field="suggestedPrice">Suggested Price</SortHeader>}
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Status
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {sortedProducts.map((product) => (
-              <tr
-                key={product.id}
-                className={`hover:bg-gray-50 transition-colors ${
-                  !product.isActive ? 'opacity-60' : ''
-                }`}
-              >
-                {/* Product Name */}
-                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/3' : 'min-w-48'}`}>
-                  <div className="min-w-0">
-                    <div className={`text-sm font-medium text-gray-900 ${
-                      viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
-                    }`}>
-                      {product.name}
-                    </div>
-                    
-                    {/* Product type badge */}
-                    {showRecipeBadges && (
-                      <div className="mt-1">
-                        {getProductTypeBadge(product)}
-                      </div>
-                    )}
-                    
-                    {product.subcategory && (
-                      <div className={`text-xs text-gray-500 mt-1 ${
-                        viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
-                      }`}>
-                        {product.subcategory}
-                      </div>
-                    )}
-                    
-                    {/* Show additional info in compact mode */}
-                    {viewMode === 'compact' && (
-                      <div className="text-xs text-gray-400 mt-1 space-y-1">
-                        {product.sku && <div className="truncate">SKU: {product.sku}</div>}
-                        {product.supplier && <div className="truncate">{product.supplier}</div>}
-                      </div>
-                    )}
-                  </div>
-                </td>
-
-                {/* Category */}
-                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/6' : 'min-w-40'}`}>
-                  <div className="flex items-center min-w-0">
-                    <span className="text-lg mr-2 flex-shrink-0">
-                      {getCategoryIcon(product.category)}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className={`text-sm text-gray-900 ${
-                        viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
-                      }`}>
-                        {getCategoryName(product.category)}
-                      </div>
-                      {viewMode === 'compact' && product.unitSize && (
-                        <div className="text-xs text-gray-500 truncate">
-                          {formatNumber(product.unitSize, 0)} {product.unitType}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </td>
-
-                {/* SKU - Full mode only */}
+      <div 
+        className="relative"
+        style={{
+          width: '100%',
+          maxWidth: '100%'
+        }}
+      >
+        <div 
+          className={`overflow-x-auto ${viewMode === 'full' ? 'scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-200' : ''}`}
+          style={{
+            width: '100%',
+            maxWidth: viewMode === 'full' ? 'calc(100vw - 320px)' : '100%',
+            ...(viewMode === 'full' ? {
+              scrollbarWidth: 'thin',
+              scrollbarColor: '#9ca3af #e5e7eb'
+            } : {})
+          }}
+        >
+          <table 
+            className="divide-y divide-gray-200"
+            style={viewMode === 'full' ? {
+              tableLayout: 'auto',
+              width: 'max-content',
+              minWidth: '1400px'
+            } : {
+              tableLayout: 'fixed', 
+              width: '100%'
+            }}
+          >
+            <thead className="bg-gray-50">
+              <tr>
+                <SortHeader field="name">
+                  <span className="block truncate">Product</span>
+                </SortHeader>
+                <SortHeader field="category">
+                  <span className="block truncate">Category</span>
+                </SortHeader>
                 {viewMode === 'full' && (
-                  <td className="px-6 py-4 min-w-32">
-                    <span className="inline-block px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded whitespace-nowrap">
-                      {product.sku || 'N/A'}
-                    </span>
-                  </td>
+                  <SortHeader field="productType">
+                    <span className="block truncate">Type</span>
+                  </SortHeader>
                 )}
-
-                {/* Supplier - Full mode only */}
                 {viewMode === 'full' && (
-                  <td className="px-6 py-4 min-w-36">
-                    <div className="text-sm text-gray-900 whitespace-nowrap">
-                      {product.supplier || 'N/A'}
-                    </div>
-                  </td>
+                  <SortHeader field="supplier">
+                    <span className="block truncate">Supplier</span>
+                  </SortHeader>
                 )}
-
-                {/* Cost per Unit */}
-                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/6' : 'min-w-24'}`}>
-                  <div className={`text-sm font-medium text-gray-900 ${
-                    viewMode === 'full' ? 'whitespace-nowrap' : ''
-                  }`}>
-                    {formatCurrency(product.costPerUnit)}
-                  </div>
-                  {viewMode === 'compact' && product.servingsPerUnit && (
-                    <div className="text-xs text-gray-500">
-                      {formatNumber(product.servingsPerUnit || 0)} servings
-                    </div>
-                  )}
-                </td>
-
-                {/* Cost per Serving */}
-                <td className={`px-6 py-4 ${viewMode === 'compact' ? 'w-1/6' : 'min-w-32'}`}>
-                  <div className={`text-sm font-medium text-gray-900 ${
-                    viewMode === 'full' ? 'whitespace-nowrap' : ''
-                  }`}>
-                    {product.costPerServing ? formatCurrency(product.costPerServing) : 'N/A'}
-                  </div>
-                  
-                  {/* Multiple serving options indicator */}
-                  {product.multipleServings && product.multipleServings.length > 0 && (
-                    <div className="text-xs text-gray-500 mt-1">
-                      {product.multipleServings.length} serving option{product.multipleServings.length !== 1 ? 's' : ''}
-                    </div>
-                  )}
-                  
-                  {/* Show serving size info */}
-                  {product.servingSize && product.servingUnit && (
-                    <div className={`text-xs text-gray-500 mt-1 ${
-                      viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'
-                    }`}>
-                      {formatNumber(product.servingSize, 1)} {product.servingUnit}
-                    </div>
-                  )}
-                  
-                  {/* Compact mode pricing info */}
-                  {viewMode === 'compact' && product.suggestedPrice && (
-                    <div className="text-xs text-green-800 font-medium">
-                      Suggested: ${formatNumber(product.suggestedPrice, 2)}
-                    </div>
-                  )}
-                </td>
-
-                {/* Suggested Price - Full mode only */}
+                <SortHeader field="costPerUnit">
+                  <span className="block truncate">Purchase Cost</span>
+                </SortHeader>
+                <SortHeader field="costPerServing">
+                  <span className="block truncate">Cost/Serving</span>
+                </SortHeader>
                 {viewMode === 'full' && (
-                  <td className="px-6 py-4 min-w-28">
-                    <div className="text-sm font-medium text-green-800 whitespace-nowrap">
-                      {product.suggestedPrice ? formatCurrency(product.suggestedPrice) : 'N/A'}
-                    </div>
-                  </td>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <span className="block truncate">Serving Options</span>
+                  </th>
                 )}
-
-                {/* Status */}
-                <td className="px-6 py-4">
-                  <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
-                    product.isActive !== false
-                      ? 'bg-green-100 text-green-800'
-                      : 'bg-gray-100 text-gray-800'
-                  }`}>
-                    {product.isActive !== false ? 'Active' : 'Inactive'}
-                  </span>
-                </td>
-
-                {/* Actions */}
-                <td className="px-6 py-4">
-                  <div className="flex items-center justify-center space-x-1">
-                    <button
-                      onClick={() => onEdit(product)}
-                      className="text-indigo-600 hover:text-indigo-900 p-1 rounded hover:bg-indigo-50 transition-colors"
-                      title="Edit product"
-                    >
-                      <Edit2 className="h-4 w-4" />
-                    </button>
-                    
-                    <button
-                      onClick={() => onToggleActive(product.id)}
-                      className={`p-1 rounded transition-colors ${
-                        product.isActive !== false
-                          ? 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                          : 'text-green-600 hover:text-green-900 hover:bg-green-50'
-                      }`}
-                      title={product.isActive !== false ? 'Deactivate' : 'Activate'}
-                    >
-                      {product.isActive !== false ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                    
-                    <button
-                      onClick={() => onDelete(product.id)}
-                      className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50 transition-colors"
-                      title="Delete product"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </td>
+                <th className={`${viewMode === 'full' ? 'px-4 py-3 w-24' : 'w-20 px-3 py-3'} text-left text-xs font-medium text-gray-500 uppercase tracking-wider`}>
+                  Status
+                </th>
+                <th className={`${viewMode === 'full' ? 'px-4 py-3 w-32' : 'w-24 px-3 py-3'} text-left text-xs font-medium text-gray-500 uppercase tracking-wider`}>
+                  Actions
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {sortedProducts.map((product) => {
+                const primaryServing = getPrimaryServing(product);
+                const isExpanded = expandedProducts.has(product.id);
+                const hasMultipleServings = product.servingOptions && product.servingOptions.length > 1;
+                
+                return (
+                  <React.Fragment key={product.id}>
+                    {/* Main Product Row */}
+                    <tr
+                      className={`hover:bg-gray-50 transition-colors ${
+                        !product.isActive ? 'opacity-60' : ''
+                      }`}
+                    >
+                      {/* Product Name */}
+                      <td className={`${viewMode === 'full' ? 'px-4 py-4 min-w-48' : 'px-3 py-4'}`} 
+                          style={viewMode === 'compact' ? {width: '30%'} : {}}>
+                        <div className="min-w-0">
+                          <div className="flex items-center space-x-2">
+                            {hasMultipleServings && (
+                              <button
+                                onClick={() => toggleProductExpansion(product.id)}
+                                className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                              >
+                                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                              </button>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className={`text-sm font-medium text-gray-900 ${viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'}`}>
+                                {product.name}
+                              </div>
+                              {product.subcategory && (
+                                <div className={`text-xs text-gray-500 ${viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'}`}>
+                                  {product.subcategory}
+                                </div>
+                              )}
+                              {hasMultipleServings && (
+                                <div className="text-xs text-blue-600">
+                                  {product.servingOptions.length} serving options
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Category */}
+                      <td className={`${viewMode === 'full' ? 'px-4 py-4 min-w-40' : 'px-3 py-4'}`} 
+                          style={viewMode === 'compact' ? {width: '15%'} : {}}>
+                        <div className="flex items-center min-w-0">
+                          <span className="text-lg mr-1 flex-shrink-0">
+                            {getCategoryIcon(product.category)}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className={`text-sm text-gray-900 ${viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'}`}>
+                              {getCategoryName(product.category)}
+                            </div>
+                            {viewMode === 'compact' && product.purchaseInfo?.format && (
+                              <div className="text-xs text-gray-500 truncate">
+                                {product.purchaseInfo.format}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Product Type - Full mode only */}
+                      {viewMode === 'full' && (
+                        <td className="px-4 py-4 min-w-32">
+                          <span className="inline-block px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded whitespace-nowrap">
+                            {getProductTypeLabel(product.productType)}
+                          </span>
+                        </td>
+                      )}
+
+                      {/* Supplier - Full mode only */}
+                      {viewMode === 'full' && (
+                        <td className="px-4 py-4 min-w-36">
+                          <div className="text-sm text-gray-900 whitespace-nowrap">
+                            {product.productType === 'recipe-based' 
+                              ? (product.recipeId || 'Recipe TBD')
+                              : (product.supplier || 'N/A')
+                            }
+                          </div>
+                        </td>
+                      )}
+
+                      {/* Purchase Cost */}
+                      <td className={`${viewMode === 'full' ? 'px-4 py-4 min-w-24' : 'px-3 py-4'}`} 
+                          style={viewMode === 'compact' ? {width: '15%'} : {}}>
+                        <div className={`text-sm font-medium text-gray-900 ${viewMode === 'full' ? 'whitespace-nowrap' : ''}`}>
+                          {product.purchaseInfo?.costPerUnit 
+                            ? formatCurrency(product.purchaseInfo.costPerUnit)
+                            : formatCurrency(product.costPerUnit || 0)
+                          }
+                        </div>
+                        {viewMode === 'compact' && (
+                          <div className="text-xs text-gray-500">
+                            {product.purchaseInfo?.quantity 
+                              ? `${product.purchaseInfo.quantity} ${product.purchaseInfo.unit}`
+                              : `${formatNumber(product.unitSize || 0)} ${product.unitType || ''}`
+                            }
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Cost per Serving */}
+                      <td className={`${viewMode === 'full' ? 'px-4 py-4 min-w-32' : 'px-3 py-4'}`} 
+                          style={viewMode === 'compact' ? {width: '20%'} : {}}>
+                        <div className={`text-sm font-medium text-gray-900 ${viewMode === 'full' ? 'whitespace-nowrap' : ''}`}>
+                          {formatCurrency(primaryServing.costPerServing)}
+                        </div>
+                        <div className={`text-xs text-gray-500 ${viewMode === 'full' ? 'whitespace-nowrap' : 'truncate'}`}>
+                          {formatNumber(primaryServing.servingSize, 1)} {primaryServing.servingUnit}
+                        </div>
+                        {viewMode === 'compact' && (
+                          <div className="text-xs text-green-800 font-medium">
+                            ${formatNumber(primaryServing.price, 2)} @ {formatNumber(primaryServing.margin, 0)}%
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Serving Options - Full mode only */}
+                      {viewMode === 'full' && (
+                        <td className="px-4 py-4 min-w-48">
+                          {product.servingOptions && product.servingOptions.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className="text-sm font-medium text-gray-900">
+                                {primaryServing.customName || primaryServing.optionType}
+                              </div>
+                              <div className="text-xs text-gray-600">
+                                {formatCurrency(primaryServing.price)} @ {formatNumber(primaryServing.margin)}%
+                              </div>
+                              {hasMultipleServings && (
+                                <div className="text-xs text-blue-600">
+                                  +{product.servingOptions.length - 1} more option{product.servingOptions.length > 2 ? 's' : ''}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-gray-400">No serving options</div>
+                          )}
+                        </td>
+                      )}
+
+                      {/* Status */}
+                      <td className={`${viewMode === 'full' ? 'px-4 py-4 w-24' : 'px-3 py-4 w-20'}`}>
+                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                          product.isActive 
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {product.isActive ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+
+                      {/* Actions */}
+                      <td className={`${viewMode === 'full' ? 'px-4 py-4 w-32' : 'px-3 py-4 w-24'}`}>
+                        <div className="flex items-center justify-center space-x-1">
+                          <button
+                            onClick={() => onEdit(product)}
+                            className="text-indigo-600 hover:text-indigo-900 p-1 rounded hover:bg-indigo-50 transition-colors"
+                            title="Edit product"
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </button>
+                          
+                          <button
+                            onClick={() => onToggleActive(product.id)}
+                            className={`p-1 rounded transition-colors ${
+                              product.isActive
+                                ? 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                                : 'text-green-600 hover:text-green-900 hover:bg-green-50'
+                            }`}
+                            title={product.isActive ? 'Deactivate' : 'Activate'}
+                          >
+                            {product.isActive ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                          
+                          <button
+                            onClick={() => onDelete(product.id)}
+                            className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50 transition-colors"
+                            title="Delete product"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* Expanded Serving Options Rows */}
+                    {isExpanded && hasMultipleServings && (
+                      product.servingOptions.slice(1).map((serving, index) => (
+                        <tr key={`${product.id}-serving-${index}`} className="bg-blue-50">
+                          <td className={`${viewMode === 'full' ? 'px-4 py-2 pl-12' : 'px-3 py-2 pl-8'}`}>
+                            <div className="text-sm text-gray-700">
+                              <Calculator className="h-3 w-3 inline mr-1" />
+                              {serving.customName || serving.optionType}
+                            </div>
+                          </td>
+                          <td className={`${viewMode === 'full' ? 'px-4 py-2' : 'px-3 py-2'}`}>
+                            <span className="inline-block px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
+                              SKU: {serving.sku}
+                            </span>
+                          </td>
+                          {viewMode === 'full' && <td className="px-4 py-2"></td>}
+                          {viewMode === 'full' && <td className="px-4 py-2"></td>}
+                          <td className={`${viewMode === 'full' ? 'px-4 py-2' : 'px-3 py-2'}`}>
+                            <div className="text-sm text-gray-700">
+                              Same cost basis
+                            </div>
+                          </td>
+                          <td className={`${viewMode === 'full' ? 'px-4 py-2' : 'px-3 py-2'}`}>
+                            <div className="text-sm font-medium text-gray-900">
+                              {formatCurrency(serving.costPerServing)}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {formatNumber(serving.servingSize, 1)} {serving.servingUnit}
+                            </div>
+                          </td>
+                          {viewMode === 'full' && (
+                            <td className="px-4 py-2">
+                              <div className="text-sm font-medium text-gray-900">
+                                {formatCurrency(serving.price)} @ {formatNumber(serving.margin)}%
+                              </div>
+                            </td>
+                          )}
+                          <td className={`${viewMode === 'full' ? 'px-4 py-2' : 'px-3 py-2'}`}></td>
+                          <td className={`${viewMode === 'full' ? 'px-4 py-2' : 'px-3 py-2'}`}></td>
+                        </tr>
+                      ))
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
       
-      {/* Table Footer with Summary (Removed Total Value) */}
+      {/* Table Footer with Summary */}
       <div className="bg-gray-50 px-6 py-3 border-t border-gray-200">
         <div className="flex items-center justify-between text-sm text-gray-600">
           <span>
@@ -364,13 +478,18 @@ const ProductTable = ({ products, onEdit, onDelete, onToggleActive, showRecipeBa
           </span>
           <div className="flex items-center space-x-6">
             <span>
-              Active: {products.filter(p => p.isActive !== false).length}
+              Active: {products.filter(p => p.isActive).length}
             </span>
             <span>
-              Recipes: {products.filter(p => p.isRecipeBased || p.category === 'batchCocktails').length}
+              Total Value: {formatCurrency(
+                products.reduce((sum, p) => {
+                  const cost = p.purchaseInfo?.costPerUnit || p.costPerUnit || 0;
+                  return sum + parseFloat(cost);
+                }, 0)
+              )}
             </span>
             <span>
-              Ingredients: {products.filter(p => p.productType === 'ingredient').length}
+              Serving Options: {products.reduce((sum, p) => sum + (p.servingOptions?.length || 0), 0)}
             </span>
           </div>
         </div>
