@@ -1,271 +1,245 @@
 // src/data/categories.js
-// Enhanced Product Categories with Families and Custom Units
-
 export const fohCategories = {
-  // BEER FAMILIES (Parent + Variants)
   beerFamily: {
-    id: 'beerFamily',
-    name: 'Beer Family (Parent)',
+    name: 'Beer Family',
     icon: '🍺',
-    description: 'Create a beer style that has multiple package variants',
-    subcategories: [
-      'Aslan Core Beers',
-      'Aslan Seasonal',
-      'Aslan Limited Release',
-      'Guest Beer Styles'
-    ],
+    productType: 'manufactured', // We make this in-house
     isFamily: true,
-    variants: ['draftBeer', 'packagedBeer'] // Can have both draft and packaged variants
-  },
-  
-  draftBeer: {
-    id: 'draftBeer',
-    name: 'Draft Beer (Variant)',
-    icon: '🚰',
-    description: 'Individual keg purchases within a beer family',
-    subcategories: [
-      'Aslan Core - Draft',
-      'Aslan Seasonal - Draft', 
-      'Aslan Limited - Draft',
-      'Guest Taps'
-    ],
-    isVariant: true,
-    parentCategory: 'beerFamily',
-    purchaseUnits: [
-      { value: 'half-barrel', label: '1/2 BBL (15.5 gal)', oz: 1984 },
-      { value: 'sixth-barrel', label: '1/6 BBL (5.16 gal)', oz: 660 }
-    ],
-    servingOptions: [
-      { value: '0.5L', label: '0.5L Pour (~17oz)', oz: 16.9 },
-      { value: '0.3L', label: '0.3L Pour (~10oz)', oz: 10.1 },
-      { value: '12oz', label: '12oz Pour', oz: 12 },
-      { value: '4oz', label: '4oz Pour', oz: 4 },
-      { value: '2oz', label: '2oz Taster', oz: 2 },
-      { value: '32oz-growler', label: '32oz Growler Fill', oz: 32 },
-      { value: '64oz-growler', label: '64oz Growler Fill', oz: 64 },
-      { value: '64oz-pitcher', label: '64oz Pitcher', oz: 64 }
-    ]
-  },
-
-  packagedBeer: {
-    id: 'packagedBeer',
-    name: 'Packaged Beer (Variant)',
-    icon: '🥫',
-    description: 'Cans/bottles within a beer family',
-    subcategories: [
-      'Aslan Cans',
-      'Aslan Bottles'
-    ],
-    isVariant: true,
-    parentCategory: 'beerFamily',
-    purchaseUnits: [
-      { value: 'flat', label: 'Flat (24 × 12oz cans)', oz: 288 },
-      { value: 'six-pack', label: 'Six Pack (6 × 12oz)', oz: 72 },
-      { value: 'single-can', label: 'Single 12oz Can', oz: 12 },
-      { value: 'bottle-500ml', label: '500ml Bottle', oz: 16.9 }
-    ],
-    servingOptions: [
-      { value: 'single-can', label: 'Single 12oz Can', oz: 12 },
-      { value: 'single-bottle', label: 'Single 500ml Bottle', oz: 16.9 },
-      { value: 'six-pack', label: 'Six Pack', oz: 72 },
-      { value: 'flat', label: 'Flat (24 cans)', oz: 288 }
-    ]
-  },
-
-  // BATCH COCKTAIL FAMILIES
-  cocktailFamily: {
-    id: 'cocktailFamily',
-    name: 'Batch Cocktail Family',
-    icon: '🍹',
-    description: 'Cocktail recipe with multiple ingredients',
-    subcategories: [
-      'Margarita Family',
-      'Moscow Mule Family',
-      'Seasonal Cocktail Family',
-      'Sangria Family'
-    ],
-    isFamily: true,
-    batchSize: { gallons: 5, oz: 640, servings: 106.7 }, // 5 gal ÷ 6oz servings
-    variants: ['cocktailIngredient']
-  },
-
-  cocktailIngredient: {
-    id: 'cocktailIngredient',
-    name: 'Cocktail Ingredient',
-    icon: '🧪',
-    description: 'Individual ingredients for batch cocktails',
-    subcategories: [
-      'Spirits',
-      'Liqueurs', 
-      'Mixers',
-      'Fresh Ingredients',
-      'Syrups',
-      'Garnishes'
-    ],
-    isVariant: true,
-    parentCategory: 'cocktailFamily',
-    hasCustomUnits: true,
-    customUnits: [
-      { value: 'ml', label: 'Milliliters (ml)', ozConversion: 0.033814 },
-      { value: 'liters', label: 'Liters (L)', ozConversion: 33.814 },
-      { value: 'oz', label: 'Fluid Ounces (oz)', ozConversion: 1 },
-      { value: 'gallons', label: 'Gallons (gal)', ozConversion: 128 },
-      { value: 'bottles-750ml', label: '750ml Bottles', ozConversion: 25.36 },
-      { value: 'bottles-1L', label: '1L Bottles', ozConversion: 33.814 }
-    ]
-  },
-
-  // INDIVIDUAL CATEGORIES (No Families)
-  cider: {
-    id: 'cider',
-    name: 'Cider',
-    icon: '🍎',
-    subcategories: ['Draft Cider', 'Guest Cider'],
-    purchaseUnits: [
-      { value: 'half-barrel', label: '1/2 BBL (15.5 gal)', oz: 1984 }
-    ],
-    servingOptions: [
-      { value: '12oz', label: '12oz Pour', oz: 12 },
-      { value: '4oz', label: '4oz Pour', oz: 4 },
-      { value: '2oz', label: '2oz Taster', oz: 2 }
-    ]
-  },
-
-  kombucha: {
-    id: 'kombucha',
-    name: 'Kombucha',
-    icon: '🫧',
-    subcategories: ['Draft Kombucha', 'Guest Kombucha'],
-    purchaseUnits: [
-      { value: 'sixth-barrel', label: '1/6 BBL (5.16 gal)', oz: 660 }
-    ],
-    servingOptions: [
-      { value: '12oz', label: '12oz Pour', oz: 12 },
-      { value: '4oz', label: '4oz Pour', oz: 4 },
-      { value: '2oz', label: '2oz Taster', oz: 2 }
-    ]
+    purchaseFormats: {
+      draft: {
+        name: 'Draft',
+        icon: '🚰',
+        purchaseUnits: [
+          { value: 'half_bbl', label: '1/2 BBL (15.5 gal)' },
+          { value: 'sixth_bbl', label: '1/6 BBL (5.16 gal)' }
+        ],
+        servingOptions: [
+          { value: 'pint_16', label: '16oz Pint', defaultSize: 16, unit: 'oz' },
+          { value: 'pint_20', label: '20oz Imperial Pint', defaultSize: 20, unit: 'oz' },
+          { value: 'half_pint', label: '8oz Half Pint', defaultSize: 8, unit: 'oz' },
+          { value: 'flight', label: '4oz Flight', defaultSize: 4, unit: 'oz' },
+          { value: 'growler_32', label: '32oz Growler', defaultSize: 32, unit: 'oz' },
+          { value: 'growler_64', label: '64oz Growler', defaultSize: 64, unit: 'oz' }
+        ]
+      },
+      packaged: {
+        name: 'Packaged',
+        icon: '📦',
+        purchaseUnits: [
+          { value: 'case_24', label: 'Case (24 Cans)' },
+          { value: 'case_12', label: 'Case (12 Bottles)' }
+        ],
+        servingOptions: [
+          { value: 'single_can', label: 'Single Can', defaultSize: 12, unit: 'oz' },
+          { value: 'six_pack', label: 'Six Pack', defaultSize: 6, unit: 'cans' },
+          { value: 'full_case', label: 'Full Case', defaultSize: 24, unit: 'cans' },
+          { value: 'single_bottle', label: 'Single Bottle', defaultSize: 12, unit: 'oz' }
+        ]
+      }
+    },
+    subcategories: ['Flagship', 'Seasonal'],
+    requiresManualSKU: true // SKUs entered per serving option
   },
 
   wine: {
-    id: 'wine',
-    name: 'Wine', 
+    name: 'Wine',
     icon: '🍷',
-    subcategories: ['Red Wine', 'White Wine', 'Rosé Wine', 'Sparkling Wine'],
+    productType: 'purchased',
+    subcategories: [
+      'Red Wine', 'White Wine', 'Rosé', 'Sparkling Wine', 
+      'Dessert Wine', 'Fortified Wine'
+    ],
     purchaseUnits: [
-      { value: 'bottle-750ml', label: '750ml Bottle', oz: 25.36 },
-      { value: 'case-wine', label: 'Case (12 × 750ml)', oz: 304.32 }
+      { value: 'bottle', label: 'Bottle (750ml)' },
+      { value: 'case_12', label: 'Case (12 bottles)' },
+      { value: 'magnum', label: 'Magnum (1.5L)' }
     ],
     servingOptions: [
-      { value: '5oz-glass', label: '5oz Glass', oz: 5 },
-      { value: '6oz-glass', label: '6oz Glass', oz: 6 },
-      { value: '9oz-glass', label: '9oz Glass', oz: 9 },
-      { value: 'bottle', label: 'Bottle (750ml)', oz: 25.36 }
-    ]
+      { value: 'glass_5oz', label: '5oz Glass', defaultSize: 5, unit: 'oz' },
+      { value: 'glass_6oz', label: '6oz Glass', defaultSize: 6, unit: 'oz' },
+      { value: 'glass_8oz', label: '8oz Glass', defaultSize: 8, unit: 'oz' },
+      { value: 'half_bottle', label: 'Half Bottle', defaultSize: 375, unit: 'ml' },
+      { value: 'full_bottle', label: 'Full Bottle', defaultSize: 750, unit: 'ml' }
+    ],
+    requiresManualSKU: false // Auto-generated, but can be overridden per serving
+  },
+
+  cider: {
+    name: 'Cider',
+    icon: '🍎',
+    productType: 'purchased',
+    subcategories: ['Traditional Cider', 'Fruit Cider', 'Hopped Cider', 'Sour Cider'],
+    purchaseUnits: [
+      { value: 'half_bbl', label: '1/2 BBL (15.5 gal)' },
+      { value: 'sixth_bbl', label: '1/6 BBL (5.16 gal)' },
+      { value: 'case_24', label: 'Case (24 Cans)' }
+    ],
+    servingOptions: [
+      { value: 'pint_16', label: '16oz Pint', defaultSize: 16, unit: 'oz' },
+      { value: 'pint_20', label: '20oz Imperial Pint', defaultSize: 20, unit: 'oz' },
+      { value: 'half_pint', label: '8oz Half Pint', defaultSize: 8, unit: 'oz' },
+      { value: 'flight', label: '4oz Flight', defaultSize: 4, unit: 'oz' }
+    ],
+    requiresManualSKU: false
+  },
+
+  kombucha: {
+    name: 'Kombucha',
+    icon: '🫧',
+    productType: 'purchased',
+    subcategories: ['Gingerade', 'Seasonal Flavor', 'Traditional'],
+    purchaseUnits: [
+      { value: 'half_bbl', label: '1/2 BBL (15.5 gal)' },
+      { value: 'sixth_bbl', label: '1/6 BBL (5.16 gal)' },
+      { value: 'case_24', label: 'Case (24 Cans)' }
+    ],
+    servingOptions: [
+      { value: 'pint_16', label: '16oz Pint', defaultSize: 16, unit: 'oz' },
+      { value: 'half_pint', label: '8oz Half Pint', defaultSize: 8, unit: 'oz' },
+      { value: 'flight', label: '4oz Flight', defaultSize: 4, unit: 'oz' }
+    ],
+    requiresManualSKU: false
+  },
+
+  batchCocktails: {
+    name: 'Batch Cocktails',
+    icon: '🍹',
+    productType: 'recipe-based', // Made from recipes
+    subcategories: ['Margarita Family', 'Whiskey Cocktails', 'Gin Cocktails', 'Vodka Cocktails', 'Seasonal Cocktails'],
+    // No purchase units - these are made from recipes
+    servingOptions: [
+      { value: 'cocktail_single', label: 'Single Cocktail', defaultSize: 8, unit: 'oz' },
+      { value: 'cocktail_double', label: 'Double Cocktail', defaultSize: 16, unit: 'oz' },
+      { value: 'pitcher', label: 'Pitcher', defaultSize: 64, unit: 'oz' },
+      { value: 'half_pitcher', label: 'Half Pitcher', defaultSize: 32, unit: 'oz' }
+    ],
+    requiresRecipe: true, // Links to recipe system
+    requiresManualSKU: false
+  },
+
+  spirits: {
+    name: 'Spirits & Liquors',
+    icon: '🥃',
+    productType: 'purchased',
+    isIngredient: true, // Used for making batch cocktails
+    subcategories: [
+      'Whiskey', 'Vodka', 'Gin', 'Rum', 'Tequila', 'Brandy', 
+      'Liqueurs', 'Bitters', 'Vermouth'
+    ],
+    purchaseUnits: [
+      { value: 'bottle_750ml', label: '750ml Bottle' },
+      { value: 'bottle_1L', label: '1L Bottle' },
+      { value: 'bottle_1_75L', label: '1.75L Bottle' },
+      { value: 'case_12', label: 'Case (12 bottles)' }
+    ],
+    // Spirits are ingredients - serving options for costing purposes
+    servingOptions: [
+      { value: 'shot_1_5oz', label: '1.5oz Shot', defaultSize: 1.5, unit: 'oz' },
+      { value: 'shot_1oz', label: '1oz Shot', defaultSize: 1, unit: 'oz' },
+      { value: 'half_shot', label: '0.5oz Half Shot', defaultSize: 0.5, unit: 'oz' }
+    ],
+    requiresManualSKU: false
   },
 
   naBeverages: {
-    id: 'naBeverages',
     name: 'N/A Beverages',
     icon: '🥤',
-    subcategories: [
-      'Fountain Drinks',
-      'Hop Water', 
-      'Coffee',
-      'Kids Drinks',
-      'Non-Alcoholic Beer'
-    ],
-    hasCustomUnits: true,
+    productType: 'purchased',
+    subcategories: ['Soda', 'Coffee', 'Iced Tea', 'Lemonade', 'Juice', 'Milk', 'N/A Beer Cans'],
     purchaseUnits: [
-      // Fountain drinks
-      { value: 'syrup-2.5gal', label: '2.5 Gal Syrup Bag', oz: 1200, dilutionRatio: 5 }, // 2.5 gal × 1:5 = 12.5 gal final
-      { value: 'syrup-5gal', label: '5 Gal Syrup Bag', oz: 2400, dilutionRatio: 5 }, // 5 gal × 1:5 = 25 gal final
-      // Hop water  
-      { value: 'half-barrel-hopwater', label: '1/2 BBL Hop Water', oz: 1984 },
-      { value: 'sixth-barrel-hopwater', label: '1/6 BBL Hop Water', oz: 660 },
-      // Coffee
-      { value: '5lb-coffee', label: '5lb Coffee Bag', cups: 160 }, // 32 cups/lb × 5lb
-      // Kids drinks
-      { value: 'gallon-milk', label: 'Gallon Milk/Juice', oz: 128 },
-      // NA Beer cases
-      { value: 'case-24x12oz', label: 'Case (24 × 12oz)', oz: 288 },
-      { value: 'case-24x16oz', label: 'Case (24 × 16oz)', oz: 384 }
+      { value: 'case_24', label: 'Case (24 cans)' },
+      { value: 'bag_2_5gal', label: '2.5 Gal Syrup Bag' },
+      { value: 'bag_5gal', label: '5 Gal Syrup Bag' },
+      { value: 'bag_5lb', label: '5lb Coffee Bag' },
+      { value: 'jug_1gal', label: '1 Gallon Jug' },
+      { value: 'bottle', label: 'Individual Bottle' },
+      { value: 'can', label: 'Individual Can' }
     ],
     servingOptions: [
-      { value: '0.5L-fountain', label: '0.5L Fountain', oz: 16.9 },
-      { value: '0.3L-fountain', label: '0.3L Fountain', oz: 10.1 },
-      { value: '16oz-kids', label: '16oz Kids', oz: 16 },
-      { value: '8oz-coffee', label: '8oz Coffee', oz: 8 },
-      { value: '12oz-hopwater', label: '12oz Hop Water', oz: 12 },
-      { value: '12oz-nabeer', label: '12oz NA Beer', oz: 12 },
-      { value: '16oz-nabeer', label: '16oz NA Beer', oz: 16 }
-    ]
+      { value: 'glass_12oz', label: '12oz Glass', defaultSize: 12, unit: 'oz' },
+      { value: 'glass_16oz', label: '16oz Glass', defaultSize: 16, unit: 'oz' },
+      { value: 'glass_20oz', label: '20oz Glass', defaultSize: 20, unit: 'oz' },
+      { value: 'can_12oz', label: '12oz Can', defaultSize: 12, unit: 'oz' },
+      { value: 'bottle_12oz', label: '12oz Bottle', defaultSize: 12, unit: 'oz' },
+      { value: 'cup_8oz', label: '8oz Cup (Coffee)', defaultSize: 8, unit: 'oz' },
+      { value: 'cup_12oz', label: '12oz Cup (Coffee)', defaultSize: 12, unit: 'oz' },
+      { value: 'cup_16oz', label: '16oz Cup (Coffee)', defaultSize: 16, unit: 'oz' }
+    ],
+    requiresManualSKU: false
   },
 
   retail: {
-    id: 'retail',
-    name: 'Retail (Merchandise)',
+    name: 'Retail & Merchandise',
     icon: '👕',
-    subcategories: [
-      'T-Shirts', 'Hoodies', 'Hats', 'Glassware', 
-      'Accessories', 'Gift Cards', 'Growlers'
-    ],
+    productType: 'purchased',
+    subcategories: ['Apparel', 'Glassware', 'Accessories', 'Gift Cards'],
     purchaseUnits: [
-      { value: 'item', label: 'Individual Item', quantity: 1 }
+      { value: 'individual', label: 'Individual Item' },
+      { value: 'case', label: 'Case/Box' },
+      { value: 'dozen', label: 'Dozen (12 items)' }
     ],
     servingOptions: [
-      { value: 'item', label: 'Individual Item', quantity: 1 }
-    ]
+      { value: 'individual', label: 'Individual Item', defaultSize: 1, unit: 'item' }
+    ],
+    requiresManualSKU: false
   }
 };
 
-// Enhanced conversion functions
-export const calculateServings = (purchaseUnit, purchaseQuantity, servingSize, servingUnit, category) => {
-  const categoryData = fohCategories[category];
-  if (!categoryData) return 0;
+// Utility functions for calculations
+export const calculateServingsFromPurchase = (purchaseUnit, purchaseQuantity, servingSize, servingUnit) => {
+  const conversions = {
+    // Volume conversions to oz
+    'half_bbl': 15.5 * 128, // 15.5 gallons to oz
+    'sixth_bbl': 5.16 * 128, // 5.16 gallons to oz
+    'bottle_750ml': 25.36, // 750ml to oz
+    'bottle_1L': 33.81, // 1L to oz
+    'bottle_1_75L': 59.17, // 1.75L to oz
+    'bag_2_5gal': 2.5 * 128, // 2.5 gallons to oz
+    'bag_5gal': 5 * 128, // 5 gallons to oz
+    'jug_1gal': 128, // 1 gallon to oz
+    
+    // Count-based units
+    'case_24': 24,
+    'case_12': 12,
+    'dozen': 12,
+    'individual': 1,
+    'bottle': 1,
+    'can': 1
+  };
 
-  // Find purchase unit data
-  const purchaseUnitData = categoryData.purchaseUnits?.find(unit => unit.value === purchaseUnit);
-  if (!purchaseUnitData) return 0;
+  const purchaseInBaseUnit = conversions[purchaseUnit] || purchaseQuantity;
+  const totalPurchased = purchaseInBaseUnit * purchaseQuantity;
 
-  // Find serving option data
-  const servingOptionData = categoryData.servingOptions?.find(option => option.value === servingUnit);
-  if (!servingOptionData) return 0;
-
-  let totalOz = 0;
+  // Convert serving size to same base unit
+  let servingInBaseUnit = servingSize;
   
-  // Handle special cases
-  if (purchaseUnitData.dilutionRatio) {
-    // Fountain drinks with syrup dilution
-    totalOz = purchaseUnitData.oz * purchaseUnitData.dilutionRatio * purchaseQuantity;
-  } else if (purchaseUnitData.cups) {
-    // Coffee - convert cups to servings
-    return purchaseUnitData.cups * purchaseQuantity; // Direct cup count
-  } else if (purchaseUnitData.quantity) {
-    // Retail items
-    return purchaseUnitData.quantity * purchaseQuantity;
-  } else {
-    // Standard liquid conversion
-    totalOz = purchaseUnitData.oz * purchaseQuantity;
+  // Handle unit conversions for servings
+  if (servingUnit === 'ml' && (purchaseUnit.includes('bottle') || purchaseUnit.includes('bag') || purchaseUnit.includes('jug'))) {
+    servingInBaseUnit = servingSize * 0.033814; // ml to oz
+  } else if (servingUnit === 'cans' || servingUnit === 'item') {
+    servingInBaseUnit = servingSize; // Count-based
   }
 
-  // Calculate servings
-  if (servingOptionData.oz) {
-    return totalOz / servingOptionData.oz;
-  } else if (servingOptionData.quantity) {
-    return purchaseQuantity / servingOptionData.quantity;
-  }
-
-  return 0;
+  return totalPurchased / servingInBaseUnit;
 };
 
-// Custom unit conversion helper
-export const convertCustomUnit = (amount, fromUnit, toOz = true) => {
-  const cocktailIngredient = fohCategories.cocktailIngredient;
-  const unitData = cocktailIngredient.customUnits.find(unit => unit.value === fromUnit);
+export const generateSKU = (productName, category, servingOption) => {
+  const categoryPrefixes = {
+    beerFamily: 'ASL-BER',
+    wine: 'ASL-WIN',
+    cider: 'ASL-CDR',
+    kombucha: 'ASL-KMB',
+    batchCocktails: 'ASL-CTL',
+    spirits: 'ASL-SPR',
+    naBeverages: 'ASL-NAB',
+    retail: 'ASL-RTL'
+  };
+
+  const nameCode = productName.substring(0, 3).toUpperCase().replace(/[^A-Z]/g, '');
+  const servingCode = servingOption.substring(0, 3).toUpperCase().replace(/[^A-Z]/g, '');
+  const randomNum = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
   
-  if (!unitData) return amount; // Fallback
-  
-  return toOz ? amount * unitData.ozConversion : amount / unitData.ozConversion;
+  return `${categoryPrefixes[category] || 'ASL-GEN'}-${nameCode}-${servingCode}-${randomNum}`;
 };
 
 export default fohCategories;

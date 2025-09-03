@@ -1,8 +1,8 @@
-// src/components/products/ProductList.jsx
+// src/components/products/ProductList.jsx - FIXED
 import React, { useState, useEffect } from 'react';
 import { Plus, Search, Filter, Package, DollarSign, Eye } from 'lucide-react';
 import { fohCategories } from '../../data/categories';
-import ProductFamilyForm from './ProductFamilyForm';
+import ProductFamilyForm from './ProductFamilyForm'; // FIXED: Using ProductFamilyForm
 import ProductTable from './ProductTable';
 
 const ProductList = ({ role = 'foh' }) => {
@@ -34,7 +34,7 @@ const ProductList = ({ role = 'foh' }) => {
   useEffect(() => {
     let filtered = products.filter(product => {
       const matchesSearch = product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           product.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           (product.baseSku && product.baseSku.toLowerCase().includes(searchTerm.toLowerCase())) ||
                            (product.supplier && product.supplier.toLowerCase().includes(searchTerm.toLowerCase()));
       
       const matchesCategory = !selectedCategory || product.category === selectedCategory;
@@ -196,14 +196,11 @@ const ProductList = ({ role = 'foh' }) => {
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-800"
             >
               <option value="">All Categories</option>
-              {Object.entries(fohCategories)
-                .filter(([key, cat]) => !cat.isVariant) // Don't show variant categories in filter
-                .map(([key, cat]) => (
-                  <option key={key} value={key}>
-                    {cat.icon} {cat.name}
-                  </option>
-                ))
-              }
+              {Object.entries(fohCategories).map(([key, cat]) => (
+                <option key={key} value={key}>
+                  {cat.icon} {cat.name}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -275,7 +272,7 @@ const ProductList = ({ role = 'foh' }) => {
         onToggleActive={handleToggleActive}
       />
 
-      {/* Product Family Form Modal */}
+      {/* FIXED: Using ProductFamilyForm instead of ProductForm */}
       <ProductFamilyForm
         product={editingProduct}
         isOpen={isFormOpen}
